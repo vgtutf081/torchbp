@@ -6,18 +6,22 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any
 
 from .job_store import JobStore
+from .logging_utils import get_structured_logger
 from .models import ProcessParams
 from .settings import Settings
 from .storage import LocalArtifactStorage, S3ArtifactStorage
+from .telemetry import collect_gpu_metrics, stage_timer
 
 
 PROCESS_SCRIPT = Path(__file__).resolve().parents[1] / "examples" / "sar_process_safetensor.py"
 CART_SCRIPT = Path(__file__).resolve().parents[1] / "examples" / "sar_polar_to_cart.py"
+LOGGER = get_structured_logger("torchbp.api.jobs")
 
 
 def request_hash(filename: str, payload_bytes: bytes, params: ProcessParams) -> str:
@@ -115,38 +119,68 @@ def run_job(
     input_path = Path(record.input_path)
 
     params = json.loads(record.params_json)
+    stage_metrics: dict[str, dict[str, Any]] = {}
+    LOGGER.info("job_started", extra={"job_id": job_id, "stage": "queued"})
     try:
-        store.update_status(job_id, status="running", stage="backprojection", progress=0.05)
-        process_cmd = [
-            sys.executable,
-            str(PROCESS_SCRIPT),
-            str(input_path),
-            "--nsweeps",
-            str(int(params["nsweeps"])),
-            "--fft-oversample",
-            str(float(params["fft_oversample"])),
-            "--skip-png",
-        ]
-        _run_command(process_cmd, work_dir)
+        with stage_timer() as timer:
+            store.update_status(job_id, status="running", stage="backprojection", progress=0.05)
+            process_cmd = [
+                sys.executable,
+                str(PROCESS_SCRIPT),
+                str(input_path),
+                "--nsweeps",
+                str(int(params["nsweeps"])),
+                "--fft-oversample",
+                str(float(params["fft_oversample"])),
+                "--skip-png",
+            ]
+            _run_command(process_cmd, work_dir)
+        stage_metrics["backprojection"] = {
+            "duration_ms": timer.get("duration_ms", 0.0),
+            **collect_gpu_metrics(),
+        }
+        LOGGER.info(
+            "stage_completed",
+            extra={
+                "job_id": job_id,
+                "stage": "backprojection",
+                "duration_ms": stage_metrics["backprojection"]["duration_ms"],
+                "extra_fields": stage_metrics["backprojection"],
+            },
+        )
 
         pkl_path = work_dir / "sar_img.p"
         if not pkl_path.exists():
             raise RuntimeError("sar_img.p was not generated")
 
-        store.update_status(job_id, stage="export", progress=0.6)
-        cart_cmd = [
-            sys.executable,
-            str(CART_SCRIPT),
-            str(pkl_path),
-            "--dpi",
-            str(int(params["dpi"])),
-        ]
-        max_side = params.get("max_side")
-        if max_side is not None:
-            cart_cmd.extend(["--max-side", str(int(max_side))])
-        _run_command(cart_cmd, work_dir)
+        with stage_timer() as timer:
+            store.update_status(job_id, stage="export", progress=0.6)
+            cart_cmd = [
+                sys.executable,
+                str(CART_SCRIPT),
+                str(pkl_path),
+                "--dpi",
+                str(int(params["dpi"])),
+            ]
+            max_side = params.get("max_side")
+            if max_side is not None:
+                cart_cmd.extend(["--max-side", str(int(max_side))])
+            _run_command(cart_cmd, work_dir)
+        stage_metrics["export"] = {
+            "duration_ms": timer.get("duration_ms", 0.0),
+            **collect_gpu_metrics(),
+        }
+        LOGGER.info(
+            "stage_completed",
+            extra={
+                "job_id": job_id,
+                "stage": "export",
+                "duration_ms": stage_metrics["export"]["duration_ms"],
+                "extra_fields": stage_metrics["export"],
+            },
+        )
 
-        manifest: dict[str, Any] = {"job_id": job_id, "files": []}
+        manifest: dict[str, Any] = {"job_id": job_id, "files": [], "metrics": stage_metrics}
         for file_name in [
             "sar_img.p",
             f"{params.get('output_prefix', 'sar_img')}_cart.png",
@@ -165,7 +199,17 @@ def run_job(
 
         store.set_result_manifest(job_id, manifest)
         store.update_status(job_id, status="success", stage="done", progress=1.0)
+        LOGGER.info("job_finished", extra={"job_id": job_id, "stage": "done"})
     except Exception as exc:
+        error_trace = traceback.format_exc()
+        LOGGER.exception(
+            "job_failed",
+            extra={
+                "job_id": job_id,
+                "stage": "failed",
+                "extra_fields": {"traceback": error_trace},
+            },
+        )
         store.update_status(job_id, status="failed", stage="failed", progress=1.0, error_message=str(exc))
         raise
     finally:
