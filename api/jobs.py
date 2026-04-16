@@ -192,6 +192,7 @@ def run_job(
     input_path = Path(record.input_path)
 
     params = json.loads(record.params_json)
+    algorithm = str(params.get("algorithm", "backprojection"))
     stage_metrics: dict[str, dict[str, Any]] = {}
     logs_dir = work_dir / "logs"
     metrics_dir = work_dir / "metrics"
@@ -225,7 +226,15 @@ def run_job(
         encoding="utf-8",
     )
 
-    LOGGER.info("job_started", extra={"job_id": job_id, "stage": "queued"})
+    LOGGER.info(
+        "job_started",
+        extra={
+            "job_id": job_id,
+            "stage": "queued",
+            "algorithm": params.get("algorithm", "backprojection"),
+            "profile": params.get("profile", "standard"),
+        },
+    )
     try:
         if _is_cancel_requested(store, job_id):
             _update_stage_progress(store, job_id, stage="ingest", stage_progress=0.0, status=STATUS_CANCELED)
@@ -247,6 +256,16 @@ def run_job(
         _update_stage_progress(store, job_id, stage="range_compression", stage_progress=25.0)
         with stage_timer() as timer:
             _update_stage_progress(store, job_id, stage="backprojection", stage_progress=5.0)
+            LOGGER.info(
+                "backprojection_start",
+                extra={
+                    "job_id": job_id,
+                    "algorithm": algorithm,
+                    "nsweeps": params["nsweeps"],
+                    "fft_oversample": params["fft_oversample"],
+                    "profile": params.get("profile", "standard"),
+                },
+            )
             process_cmd = [
                 sys.executable,
                 str(PROCESS_SCRIPT),
@@ -259,7 +278,7 @@ def run_job(
                 "--profile",
                 str(params.get("profile", "standard")),
                 "--algorithm",
-                str(params.get("algorithm", "backprojection")),
+                algorithm,
             ]
             process_stdout, process_stderr = _run_command(process_cmd, work_dir)
             (logs_dir / "backprojection.stdout.log").write_text(process_stdout, encoding="utf-8")
@@ -274,6 +293,7 @@ def run_job(
             extra={
                 "job_id": job_id,
                 "stage": "backprojection",
+                "algorithm": algorithm,
                 "duration_ms": stage_metrics["backprojection"]["duration_ms"],
                 "extra_fields": stage_metrics["backprojection"],
             },
@@ -428,7 +448,15 @@ def run_job(
             stage_progress=100.0,
             overall_progress=100.0,
         )
-        LOGGER.info("job_finished", extra={"job_id": job_id, "stage": "done"})
+        LOGGER.info(
+            "job_finished",
+            extra={
+                "job_id": job_id,
+                "stage": "done",
+                "algorithm": algorithm,
+                "profile": params.get("profile", "standard"),
+            },
+        )
     except Exception as exc:
         if _is_cancel_requested(store, job_id):
             store.update_status(
