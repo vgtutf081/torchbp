@@ -1,0 +1,49 @@
+name: Nightly Benchmark
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    name: nightly-benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          USE_CUDA=0 FORCE_CUDA=0 python -m pip install --no-build-isolation -e .
+
+      - name: Run benchmark
+        run: |
+          mkdir -p artifacts
+          python - <<'PY' | tee artifacts/nightly-benchmark.log
+          import torch
+          from tests.benchmark_backprojection import main
+
+          if torch.cuda.is_available():
+              print("Running CUDA benchmark")
+              main("cuda")
+          else:
+              print("CUDA unavailable; skipping CUDA benchmark")
+
+          print("Running CPU benchmark")
+          main("cpu")
+          PY
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-benchmark-logs
+          path: artifacts/nightly-benchmark.log
+          if-no-files-found: error
