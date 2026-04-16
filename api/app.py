@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from .job_store import JobStore
 from .jobs import prepare_job
@@ -30,6 +32,33 @@ def _build_queue_backend():
 QUEUE = _build_queue_backend()
 
 app = FastAPI(title="torchbp SAR API", version="0.1.0")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _resolve_local_artifact_path(job_id: str, object_name: str) -> Path:
+    if SETTINGS.storage_backend != "local":
+        raise HTTPException(status_code=400, detail="Local artifact serving is available only for local storage backend")
+    base_dir = (SETTINGS.artifacts_dir / job_id).resolve()
+    candidate = (base_dir / object_name).resolve()
+    if not str(candidate).startswith(str(base_dir)):
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return candidate
+
+
+@app.get("/")
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/ui")
+
+
+@app.get("/ui")
+def ui() -> FileResponse:
+    index_path = STATIC_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=500, detail="UI assets are missing")
+    return FileResponse(str(index_path), media_type="text/html")
 
 
 @app.get("/health")
@@ -134,6 +163,12 @@ def job_manifest(job_id: str) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return json.loads(job.result_manifest_json) if job.result_manifest_json else {}
+
+
+@app.get("/jobs/{job_id}/artifact")
+def job_artifact(job_id: str, object_name: str) -> FileResponse:
+    artifact_path = _resolve_local_artifact_path(job_id, object_name)
+    return FileResponse(path=str(artifact_path), filename=artifact_path.name)
 
 
 @app.post("/jobs/{job_id}/cancel")

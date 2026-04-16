@@ -208,6 +208,22 @@ Production-style API server is provided in `api/app.py`.
 python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
 ```
 
+### Web application UI
+
+After server startup open:
+
+```text
+http://127.0.0.1:8000/ui
+```
+
+UI supports:
+
+- upload `.safetensors`
+- profile and parameter controls (`nsweeps`, `fft_oversample`, `dpi`, `max_side`, `write_world_file`)
+- live stage/overall progress
+- cancel active job
+- artifact links and quicklook preview
+
 Health check:
 
 ```bash

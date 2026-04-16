@@ -381,6 +381,7 @@ def run_job(
         manifest["input_artifacts"].append(
             {
                 "name": "input.safetensors",
+                "object_name": "inputs/input.safetensors",
                 "uri": input_uri,
                 "sha256": _sha256_file(input_path),
             }
@@ -393,6 +394,7 @@ def run_job(
                     {
                         "name": local_file.name,
                         "kind": kind,
+                        "object_name": object_name,
                         "uri": uri,
                         "sha256": _sha256_file(local_file),
                     }
@@ -405,6 +407,7 @@ def run_job(
             {
                 "name": "timings.json",
                 "kind": "metrics",
+                "object_name": "metrics/timings.json",
                 "uri": uri,
                 "sha256": _sha256_file(metrics_path),
             }

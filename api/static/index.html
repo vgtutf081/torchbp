@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Torchbp SAR Processor</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #0f172a; color: #e2e8f0; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    label { display: block; font-size: 12px; margin-bottom: 4px; color: #93c5fd; }
+    input, select, button { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; }
+    button { cursor: pointer; background: #1d4ed8; border-color: #1d4ed8; }
+    button.secondary { background: #334155; border-color: #334155; }
+    .progress-wrap { width: 100%; background: #1e293b; border-radius: 6px; overflow: hidden; height: 16px; }
+    .bar { height: 16px; background: #22c55e; width: 0%; transition: width 0.4s; }
+    .muted { color: #94a3b8; font-size: 13px; }
+    ul { margin-top: 8px; }
+    a { color: #60a5fa; }
+    img { max-width: 100%; border-radius: 8px; border: 1px solid #334155; }
+    .inline { display: inline-flex; gap: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Torchbp SAR Processor</h1>
+  <p class="muted">Upload <code>.safetensors</code>, tune parameters, run pipeline, and download artifacts.</p>
+
+  <div class="card">
+    <h3>Job Request</h3>
+    <form id="jobForm">
+      <div class="row">
+        <div>
+          <label>Input safetensors</label>
+          <input type="file" id="file" accept=".safetensors" required />
+        </div>
+        <div>
+          <label>Profile</label>
+          <select id="profile">
+            <option value="fast_preview">fast_preview</option>
+            <option value="standard" selected>standard</option>
+            <option value="high_quality">high_quality</option>
+          </select>
+        </div>
+        <div>
+          <label>nsweeps</label>
+          <input type="number" id="nsweeps" min="1" value="10000" />
+        </div>
+        <div>
+          <label>fft_oversample</label>
+          <input type="number" id="fft_oversample" min="0.1" step="0.1" value="1.5" />
+        </div>
+        <div>
+          <label>dpi</label>
+          <input type="number" id="dpi" min="1" value="700" />
+        </div>
+        <div>
+          <label>max_side (optional)</label>
+          <input type="number" id="max_side" min="1" placeholder="e.g. 2048" />
+        </div>
+        <div>
+          <label>write_world_file</label>
+          <select id="write_world_file">
+            <option value="false" selected>false</option>
+            <option value="true">true</option>
+          </select>
+        </div>
+      </div>
+      <div class="inline" style="margin-top: 12px; width: 100%;">
+        <button type="submit">Submit Job</button>
+        <button type="button" id="cancelBtn" class="secondary">Cancel Job</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Status</h3>
+    <div id="jobMeta" class="muted">No job submitted yet.</div>
+    <p id="stageText">stage: -</p>
+    <p id="statusText">status: -</p>
+    <div class="progress-wrap"><div id="overallBar" class="bar"></div></div>
+    <p id="overallText">overall: 0%</p>
+    <div class="progress-wrap"><div id="stageBar" class="bar" style="background:#38bdf8"></div></div>
+    <p id="stageProgressText">stage_progress: 0%</p>
+  </div>
+
+  <div class="card">
+    <h3>Result</h3>
+    <div id="previewWrap" class="muted">Preview will appear after success.</div>
+    <div id="artifactLinks"></div>
+  </div>
+
+  <script>
+    let activeJobId = null;
+    let pollTimer = null;
+
+    const form = document.getElementById('jobForm');
+    const cancelBtn = document.getElementById('cancelBtn');
+
+    const jobMeta = document.getElementById('jobMeta');
+    const stageText = document.getElementById('stageText');
+    const statusText = document.getElementById('statusText');
+    const overallBar = document.getElementById('overallBar');
+    const overallText = document.getElementById('overallText');
+    const stageBar = document.getElementById('stageBar');
+    const stageProgressText = document.getElementById('stageProgressText');
+    const previewWrap = document.getElementById('previewWrap');
+    const artifactLinks = document.getElementById('artifactLinks');
+
+    function setProgress(overall, stageProgress) {
+      const o = Math.max(0, Math.min(100, Number(overall || 0)));
+      const s = Math.max(0, Math.min(100, Number(stageProgress || 0)));
+      overallBar.style.width = `${o}%`;
+      stageBar.style.width = `${s}%`;
+      overallText.textContent = `overall: ${o.toFixed(1)}%`;
+      stageProgressText.textContent = `stage_progress: ${s.toFixed(1)}%`;
+    }
+
+    async function fetchJob(jobId) {
+      const res = await fetch(`/jobs/${jobId}`);
+      if (!res.ok) throw new Error(`status fetch failed: ${res.status}`);
+      return await res.json();
+    }
+
+    function buildArtifactList(jobId, manifest) {
+      artifactLinks.innerHTML = '';
+      const list = document.createElement('ul');
+      const artifacts = manifest?.output_artifacts || [];
+      for (const item of artifacts) {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        const objectName = item.object_name || `${item.kind || 'outputs'}/${item.name}`;
+        a.href = `/jobs/${jobId}/artifact?object_name=${encodeURIComponent(objectName)}`;
+        a.textContent = `${item.kind || 'artifact'}: ${item.name}`;
+        a.target = '_blank';
+        li.appendChild(a);
+        list.appendChild(li);
+
+        if (item.kind === 'previews' && item.name.endsWith('.png')) {
+          previewWrap.innerHTML = `<img alt="preview" src="${a.href}" />`;
+        }
+      }
+      if (!artifacts.length) {
+        artifactLinks.innerHTML = '<p class="muted">No artifacts yet.</p>';
+      } else {
+        artifactLinks.appendChild(list);
+      }
+    }
+
+    async function pollJob(jobId) {
+      try {
+        const job = await fetchJob(jobId);
+        jobMeta.textContent = `job_id: ${job.job_id}`;
+        stageText.textContent = `stage: ${job.stage}`;
+        statusText.textContent = `status: ${job.status}${job.error ? `, error: ${job.error}` : ''}`;
+        setProgress(job.overall_progress, job.stage_progress);
+
+        if (job.status === 'success' || job.status === 'failed' || job.status === 'canceled') {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          buildArtifactList(job.job_id, job.result_manifest || {});
+        }
+      } catch (err) {
+        statusText.textContent = `status: polling error (${err.message})`;
+      }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const fileInput = document.getElementById('file');
+      if (!fileInput.files.length) {
+        alert('Choose a .safetensors file first');
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+      fd.append('profile', document.getElementById('profile').value);
+      fd.append('nsweeps', document.getElementById('nsweeps').value);
+      fd.append('fft_oversample', document.getElementById('fft_oversample').value);
+      fd.append('dpi', document.getElementById('dpi').value);
+      const maxSide = document.getElementById('max_side').value.trim();
+      if (maxSide) fd.append('max_side', maxSide);
+      fd.append('write_world_file', document.getElementById('write_world_file').value);
+
+      const res = await fetch('/jobs', { method: 'POST', body: fd });
+      const body = await res.json();
+      if (!res.ok) {
+        statusText.textContent = `status: submit failed (${JSON.stringify(body)})`;
+        return;
+      }
+
+      activeJobId = body.job_id;
+      jobMeta.textContent = `job_id: ${activeJobId}`;
+      statusText.textContent = `status: ${body.status}`;
+      stageText.textContent = 'stage: queued';
+      setProgress(0, 0);
+      previewWrap.innerHTML = '<p class="muted">Waiting for preview...</p>';
+      artifactLinks.innerHTML = '';
+
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(() => pollJob(activeJobId), 1500);
+      await pollJob(activeJobId);
+    });
+
+    cancelBtn.addEventListener('click', async () => {
+      if (!activeJobId) {
+        alert('No active job');
+        return;
+      }
+      const res = await fetch(`/jobs/${activeJobId}/cancel`, { method: 'POST' });
+      if (res.ok) {
+        statusText.textContent = 'status: canceling';
+      } else {
+        const body = await res.json();
+        statusText.textContent = `status: cancel failed (${JSON.stringify(body)})`;
+      }
+    });
+  </script>
+</body>
+</html>

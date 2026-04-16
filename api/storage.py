@@ -17,6 +17,7 @@ class LocalArtifactStorage(ArtifactStorage):
         dest_dir = self.root_dir / job_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_path = dest_dir / object_name
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_bytes(local_path.read_bytes())
         return f"file://{dest_path.as_posix()}"
 
