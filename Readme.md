@@ -124,6 +124,33 @@ python examples/sar_process_safetensor.py sar.safetensors
 python examples/sar_polar_to_cart.py sar_img.p
 ```
 
+### Backprojection algorithm selection
+
+By default the script uses fast linear interpolation. You can select a different algorithm:
+
+```bash
+# Fast linear (default)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm backprojection
+
+# Omega-K (better quality, slower)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm knab
+
+# Lanczos interpolation (high quality)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm lanczos
+
+# Fast Factorized Backprojection (10x faster on moderate images)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm ffbp
+```
+
+Or set it in the config file:
+
+```json
+{
+  "algorithm": "knab",
+  ...
+}
+```
+
 ### Run with JSON config
 
 You can keep processing parameters in separate JSON files:
@@ -154,9 +181,27 @@ Expected outputs:
 
 ### Backprojection algorithms
 
-The library provides several backprojection implementations. The example script uses the basic linear interpolation method, but you can use the operators directly in Python:
+The library provides several backprojection implementations. The example script uses the basic linear interpolation method by default, but you can select different algorithms both via CLI and in Python code:
 
-**Basic back projection** (fastest, default):
+**Via CLI (in sar_process_safetensor.py example):**
+
+```bash
+# Fast linear (default, ~30s for full data on RTX 3090)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm backprojection
+
+# Omega-K / Knab (best quality, ~2-3 min on RTX 3090)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm knab
+
+# Lanczos (high quality, intermediate speed)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm lanczos
+
+# FFBP (fastest, ~5s for moderate images)
+python examples/sar_process_safetensor.py sar.safetensors --algorithm ffbp
+```
+
+**Via Python code:**
+
+Basic back projection (fastest, default):
 ```python
 import torchbp
 img = torchbp.ops.backprojection_polar_2d(
@@ -164,21 +209,21 @@ img = torchbp.ops.backprojection_polar_2d(
 )
 ```
 
-**Lanczos interpolation** (higher quality):
+Lanczos interpolation (higher quality):
 ```python
 img = torchbp.ops.backprojection_polar_2d_lanczos(
     data, grid, fc, r_res, pos, d0, order=6
 )
 ```
 
-**Omega-K (Knab interpolation)** (best quality, slower):
+Omega-K (Knab interpolation) (best quality, slower):
 ```python
 img = torchbp.ops.backprojection_polar_2d_knab(
     data, grid, fc, r_res, pos, d0, order=4, oversample=2
 )
 ```
 
-**Fast Factorized Backprojection (FFBP)** (10x faster on moderate-size images):
+Fast Factorized Backprojection (FFBP) (10x faster on moderate-size images):
 ```python
 img = torchbp.ops.ffbp(
     data, grid, fc, r_res, pos,
@@ -188,7 +233,7 @@ img = torchbp.ops.ffbp(
 )
 ```
 
-**Cartesian grid backprojection** (alternative output format):
+Cartesian grid backprojection (alternative output format):
 ```python
 img = torchbp.ops.backprojection_cart_2d(
     data, grid_cart, fc, r_res, pos, d0

@@ -136,8 +136,15 @@ if __name__ == "__main__":
         default=None,
         help="Skip saving sar_img.png to reduce RAM usage on very large runs.",
     )
+    parser.add_argument(
+        "--algorithm",
+        type=str,
+        default=None,
+        help="Backprojection algorithm: backprojection|knab|lanczos|ffbp (default: backprojection)",
+    )
     args = parser.parse_args()
     config = _load_json_config(args.config)
+    algorithm = _resolve_value(args.algorithm, config, "algorithm", "backprojection")
     profile = normalize_profile(_resolve_value(args.profile, config, "profile", "standard"))
     profile_defaults = process_profile_defaults(profile)
 
@@ -383,8 +390,29 @@ if __name__ == "__main__":
     pos_centered = pos - origin
     print("Focusing final image")
     if has_bp_cuda:
-        sar_img = torchbp.ops.backprojection_polar_2d( fsweeps, grid_polar, fc,
-                r_res, pos_centered, d0, data_fmod=data_fmod).squeeze()
+        if algorithm == "knab":
+            print(f"Using Omega-K (knab) backprojection")
+            sar_img = torchbp.ops.backprojection_polar_2d_knab(
+                fsweeps, grid_polar, fc, r_res, pos_centered, d0, 
+                order=4, oversample=2, data_fmod=data_fmod
+            ).squeeze()
+        elif algorithm == "lanczos":
+            print(f"Using Lanczos backprojection")
+            sar_img = torchbp.ops.backprojection_polar_2d_lanczos(
+                fsweeps, grid_polar, fc, r_res, pos_centered, d0,
+                order=6, data_fmod=data_fmod
+            ).squeeze()
+        elif algorithm == "ffbp":
+            print(f"Using Fast Factorized Backprojection (FFBP)")
+            sar_img = torchbp.ops.ffbp(
+                fsweeps, grid_polar, fc, r_res, pos_centered,
+                stages=3, divisions=2, d0=d0, data_fmod=data_fmod
+            ).squeeze()
+        else:
+            print(f"Using basic backprojection (linear interpolation)")
+            sar_img = torchbp.ops.backprojection_polar_2d(
+                fsweeps, grid_polar, fc, r_res, pos_centered, d0, data_fmod=data_fmod
+            ).squeeze()
     else:
         sar_img = range_doppler_fallback_gpu(fsweeps, grid_polar.nr, grid_polar.ntheta)
     print("Entropy", torchbp.util.entropy(sar_img).item())

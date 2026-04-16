@@ -3,6 +3,7 @@
   "nsweeps": 10000,
   "fft_oversample": 1.5,
   "skip_png": false,
+  "algorithm": "backprojection",
   "x0": 1,
   "x1": 2000,
   "autofocus_x0": 400,
