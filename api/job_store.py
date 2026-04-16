@@ -26,6 +26,7 @@ class JobStore:
 
     def _init_schema(self) -> None:
         with closing(self._connect()) as conn:
+            conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -62,6 +63,40 @@ class JobStore:
                 conn.execute(
                     "UPDATE jobs SET stage_progress = COALESCE(stage_progress, progress), overall_progress = COALESCE(overall_progress, progress)"
                 )
+                # Drop the old progress column by recreating the table
+                conn.execute(
+                    """
+                    CREATE TABLE jobs_new (
+                        job_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        stage TEXT NOT NULL,
+                        stage_progress REAL NOT NULL,
+                        overall_progress REAL NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        input_path TEXT NOT NULL,
+                        request_hash TEXT NOT NULL,
+                        profile TEXT NOT NULL,
+                        params_json TEXT NOT NULL,
+                        result_manifest_json TEXT NOT NULL,
+                        error_class TEXT,
+                        cancel_requested INTEGER NOT NULL DEFAULT 0,
+                        error_message TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO jobs_new
+                    SELECT job_id, status, stage, stage_progress, overall_progress, created_at, updated_at,
+                           input_path, request_hash, profile, params_json, result_manifest_json,
+                           error_class, cancel_requested, error_message
+                    FROM jobs
+                    """
+                )
+                conn.execute("DROP TABLE jobs")
+                conn.execute("ALTER TABLE jobs_new RENAME TO jobs")
+            conn.execute("PRAGMA foreign_keys = ON")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_request_hash ON jobs(request_hash)"
             )
