@@ -124,6 +124,26 @@ python examples/sar_process_safetensor.py sar.safetensors
 python examples/sar_polar_to_cart.py sar_img.p
 ```
 
+### Run with JSON config
+
+You can keep processing parameters in separate JSON files:
+
+```bash
+python examples/sar_process_safetensor.py --config examples/sar_process_config.json
+python examples/sar_polar_to_cart.py --config examples/sar_polar_to_cart_config.json
+```
+
+Provided templates:
+
+- `examples/sar_process_config.json`
+- `examples/sar_polar_to_cart_config.json`
+
+CLI flags still work and can override JSON values when needed.
+
+Compatibility note: JSON config only controls runtime parameters. It does not
+change the safetensors format, so existing/old `sar.safetensors` files continue
+to work as before.
+
 Expected outputs:
 
 - `sar_img.png`
@@ -164,7 +184,7 @@ Notes:
 
 ## API
 
-Minimal API server is provided in `api/app.py`.
+Production-style API server is provided in `api/app.py`.
 
 ### Start API
 
@@ -178,38 +198,73 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
-### Process SAR file
+### Submit processing job
 
-Endpoint: `POST /process`
+Endpoint: `POST /jobs` (back-compat alias: `POST /process`)
 
 Form fields:
 
 - `file`: input `.safetensors` file (required)
-- `nsweeps`: number of sweeps (default: `10000`)
-- `fft_oversample`: FFT oversampling factor (default: `1.5`)
-- `dpi`: output PNG DPI (default: `700`)
+- `profile`: `fast_preview | standard | high_quality` (default: `standard`)
+- `nsweeps`: number of sweeps (CLI/JSON override profile default)
+- `fft_oversample`: FFT oversampling factor (CLI/JSON override profile default)
+- `dpi`: output PNG DPI (CLI/JSON override profile default)
 - `max_side`: optional max output side in pixels
 
-The endpoint returns `sar_img_cart.png` directly as binary response.
+Validation is performed before queueing (`mission metadata` and `trajectory sanity`).
+On success API returns `job_id` and queue `task_id`.
+
+Status endpoints:
+
+- `GET /jobs/{job_id}`
+- `GET /jobs/{job_id}/manifest`
+
+### Artifacts per job
+
+Each completed job stores:
+
+- `sar_img.p`
+- `sar_img_cart.png` (quicklook)
+- `sar_img.tif` (GeoTIFF)
+- `sar_img_cart.pgw` (world file)
+- `manifest.json` (URIs + metrics)
+
+Storage backend is configurable:
+
+- Local filesystem (`TORCHBP_STORAGE_BACKEND=local`)
+- S3/MinIO (`TORCHBP_STORAGE_BACKEND=s3` + S3 env vars)
 
 Windows (PowerShell) example:
 
 ```powershell
-curl.exe -X POST "http://127.0.0.1:8000/process" ^
+curl.exe -X POST "http://127.0.0.1:8000/jobs" ^
 	-F "file=@examples/sar.safetensors" ^
-	-F "nsweeps=10000" ^
-	-F "fft_oversample=1.5" ^
+	-F "profile=standard" ^
 	-F "dpi=300" ^
-	--output sar_img_cart_api.png
+	-F "max_side=2048"
 ```
 
 Linux/macOS example:
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/process" \
+curl -X POST "http://127.0.0.1:8000/jobs" \
 	-F "file=@examples/sar.safetensors" \
-	-F "nsweeps=10000" \
-	-F "fft_oversample=1.5" \
+	-F "profile=fast_preview" \
 	-F "dpi=300" \
-	--output sar_img_cart_api.png
+	-F "max_side=1024"
 ```
+
+Check status:
+
+```bash
+curl "http://127.0.0.1:8000/jobs/<job_id>"
+```
+
+## CI
+
+GitHub Actions workflows are included:
+
+- `.github/workflows/ci.yml` with separate `smoke` and `full-ops` jobs
+- `.github/workflows/nightly-benchmark.yml` for scheduled benchmarks
+
+Both CI workflows upload test/benchmark logs as artifacts.

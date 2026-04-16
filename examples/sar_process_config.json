@@ -1,0 +1,20 @@
+{
+  "filename": "sar.safetensors",
+  "nsweeps": 10000,
+  "fft_oversample": 1.5,
+  "skip_png": false,
+  "x0": 1,
+  "x1": 2000,
+  "autofocus_x0": 400,
+  "autofocus_x1": 1200,
+  "autofocus_theta_limit": 0.8,
+  "theta_limit": 1.0,
+  "sweep_start": 0,
+  "max_steps": 15,
+  "max_step_limit": 0.5,
+  "data_dtype": "complex64",
+  "range_window": "hamming",
+  "angle_window": ["taylor", 4, 50],
+  "d0": 0.5,
+  "initial_pga": false
+}
