@@ -46,6 +46,31 @@ class TestValidation(unittest.TestCase):
             self.assertTrue(report["ok"])
             self.assertEqual(report["errors"], [])
 
+    def test_validate_safetensors_file_ok_for_int16_data(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            file_path = Path(temp_dir) / "sample_int16.safetensors"
+            tensors = {
+                "data": torch.randint(-1000, 1000, (64, 1, 128), dtype=torch.int16),
+                "pos": torch.tensor(
+                    [[float(i), 0.0, 1.0] for i in range(64)],
+                    dtype=torch.float32,
+                ),
+                "att": torch.zeros((64, 3), dtype=torch.float32),
+                "counts": torch.arange(64, dtype=torch.float32),
+            }
+            metadata = {
+                "fsample": "50000000",
+                "fc": "5800000000",
+                "bw": "20000000",
+                "origin_angle": "0.0",
+                "pri": "0.001",
+            }
+            save_file(tensors, str(file_path), metadata=metadata)
+
+            report = validate_safetensors_file(file_path)
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["errors"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

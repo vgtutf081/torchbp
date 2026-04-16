@@ -18,6 +18,10 @@ class TestApiUi(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Torchbp SAR Processor", response.text)
 
+    def test_favicon_route(self) -> None:
+        response = self.client.get("/favicon.ico")
+        self.assertEqual(response.status_code, 204)
+
     def test_root_redirects_to_ui(self) -> None:
         response = self.client.get("/", follow_redirects=False)
         self.assertEqual(response.status_code, 307)

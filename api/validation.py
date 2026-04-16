@@ -113,15 +113,16 @@ def validate_signal(
     sample_view = data
     if data.ndim > 2:
         sample_view = data[:, 0, :]
+    sample_view_abs = torch.abs(sample_view).to(dtype=torch.float32)
 
-    max_abs = torch.max(torch.abs(sample_view)).item()
+    max_abs = torch.max(sample_view_abs).item()
     if max_abs > 0:
-        sat_ratio = float((torch.abs(sample_view) >= (0.99 * max_abs)).float().mean().item())
+        sat_ratio = float((sample_view_abs >= (0.99 * max_abs)).float().mean().item())
         if sat_ratio > 0.05:
             warnings.append(f"high saturated sample ratio: {sat_ratio:.3f}")
 
-    mean_abs = float(torch.mean(torch.abs(sample_view)).item())
-    std_abs = float(torch.std(torch.abs(sample_view)).item())
+    mean_abs = float(torch.mean(sample_view_abs).item())
+    std_abs = float(torch.std(sample_view_abs).item())
     if std_abs > 1e-9:
         dc_bias_ratio = mean_abs / std_abs
         if dc_bias_ratio > 5.0:

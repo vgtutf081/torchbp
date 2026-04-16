@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .job_store import JobStore
@@ -59,6 +59,11 @@ def ui() -> FileResponse:
     if not index_path.exists():
         raise HTTPException(status_code=500, detail="UI assets are missing")
     return FileResponse(str(index_path), media_type="text/html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.get("/health")
