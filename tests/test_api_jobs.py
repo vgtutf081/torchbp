@@ -12,7 +12,9 @@ class TestApiJobs(unittest.TestCase):
 
     @patch("api.app.prepare_job")
     @patch("api.app.QUEUE")
-    def test_submit_job_queues_task(self, mock_queue, mock_prepare_job) -> None:
+    @patch("api.app.validate_safetensors_payload")
+    def test_submit_job_queues_task(self, mock_validation, mock_queue, mock_prepare_job) -> None:
+        mock_validation.return_value = {"ok": True, "errors": [], "warnings": []}
         mock_prepare_job.return_value = ("job_123", None, False)
         mock_queue.enqueue.return_value.external_id = "task_1"
 
@@ -24,6 +26,14 @@ class TestApiJobs(unittest.TestCase):
         self.assertEqual(payload["job_id"], "job_123")
         self.assertEqual(payload["status"], "queued")
         self.assertEqual(payload["task_id"], "task_1")
+
+    @patch("api.app.prepare_job")
+    def test_submit_job_rejects_invalid_payload(self, mock_prepare_job) -> None:
+        files = {"file": ("sample.safetensors", b"not-a-safetensors", "application/octet-stream")}
+        response = self.client.post("/jobs", files=files)
+
+        self.assertEqual(response.status_code, 422)
+        mock_prepare_job.assert_not_called()
 
 
 if __name__ == "__main__":

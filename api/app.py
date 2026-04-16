@@ -8,6 +8,7 @@ from .jobs import prepare_job
 from .models import ProcessParams
 from .queueing import InlineQueueBackend, RQQueueBackend
 from .settings import load_settings
+from .validation import validate_safetensors_payload
 from .worker import run_job
 from torchbp.profiles import normalize_profile
 
@@ -64,6 +65,10 @@ async def submit_job(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     payload = await file.read()
+    validation_report = validate_safetensors_payload(payload)
+    if not validation_report["ok"]:
+        raise HTTPException(status_code=422, detail=validation_report)
+
     params = ProcessParams(
         nsweeps=nsweeps,
         fft_oversample=fft_oversample,
