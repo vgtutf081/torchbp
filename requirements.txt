@@ -4,3 +4,6 @@ numpy
 scipy
 safetensors
 packaging
+redis
+rq
+boto3

@@ -7,6 +7,10 @@ matplotlib
 fastapi
 uvicorn[standard]
 python-multipart
+httpx
+redis
+rq
+boto3
 
 # Tests
 expecttest

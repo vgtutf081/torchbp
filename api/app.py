@@ -1,112 +1,138 @@
-import os
-import shutil
-import subprocess
-import sys
-import tempfile
-import uuid
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
+
+from .job_store import JobStore
+from .jobs import prepare_job
+from .models import ProcessParams
+from .queueing import InlineQueueBackend, RQQueueBackend
+from .settings import load_settings
+from .worker import run_job
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PROCESS_SCRIPT = REPO_ROOT / "examples" / "sar_process_safetensor.py"
-CART_SCRIPT = REPO_ROOT / "examples" / "sar_polar_to_cart.py"
-RUNS_DIR = REPO_ROOT / "api_runs"
+SETTINGS = load_settings()
+STORE = JobStore(SETTINGS.jobs_db_path)
+
+
+def _build_queue_backend():
+    if SETTINGS.queue_backend == "rq":
+        try:
+            return RQQueueBackend(SETTINGS.redis_url)
+        except Exception:
+            return InlineQueueBackend()
+    return InlineQueueBackend()
+
+
+QUEUE = _build_queue_backend()
 
 app = FastAPI(title="torchbp SAR API", version="0.1.0")
 
 
-def _run_command(cmd: list[str], cwd: Path) -> None:
-    env = os.environ.copy()
-    env["MPLBACKEND"] = "Agg"
-    result = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        env=env,
-        text=True,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "message": "Processing command failed",
-                "command": " ".join(cmd),
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            },
-        )
-
-
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "queue_backend": SETTINGS.queue_backend,
+        "storage_backend": SETTINGS.storage_backend,
+    }
 
 
-@app.post("/process")
-async def process_sar(
+@app.post("/jobs")
+async def submit_job(
     file: UploadFile = File(...),
     nsweeps: int = Form(10000),
     fft_oversample: float = Form(1.5),
     dpi: int = Form(700),
     max_side: int | None = Form(None),
-) -> FileResponse:
+) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Input filename is missing")
     if not file.filename.lower().endswith(".safetensors"):
         raise HTTPException(status_code=400, detail="Only .safetensors files are supported")
+    if nsweeps <= 0:
+        raise HTTPException(status_code=400, detail="nsweeps must be > 0")
+    if fft_oversample <= 0:
+        raise HTTPException(status_code=400, detail="fft_oversample must be > 0")
+    if dpi <= 0:
+        raise HTTPException(status_code=400, detail="dpi must be > 0")
 
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    run_dir = RUNS_DIR / f"run_{uuid.uuid4().hex}"
-    run_dir.mkdir(parents=True, exist_ok=False)
+    payload = await file.read()
+    params = ProcessParams(
+        nsweeps=nsweeps,
+        fft_oversample=fft_oversample,
+        dpi=dpi,
+        max_side=max_side,
+        profile="standard",
+    )
+    job_id, _, reused = prepare_job(
+        filename=file.filename,
+        payload=payload,
+        params=params,
+        settings=SETTINGS,
+        store=STORE,
+    )
+    if not reused:
+        task = QUEUE.enqueue(
+            run_job,
+            job_id,
+            store_path=str(SETTINGS.jobs_db_path),
+            settings_dict=SETTINGS.to_worker_dict(),
+        )
+        return {"job_id": job_id, "status": "queued", "task_id": task.external_id}
 
-    input_path = run_dir / "input.safetensors"
-    with input_path.open("wb") as out_f:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            out_f.write(chunk)
+    existing = STORE.get_job(job_id)
+    return {
+        "job_id": job_id,
+        "status": existing.status if existing else "queued",
+        "reused": True,
+    }
 
-    process_cmd = [
-        sys.executable,
-        str(PROCESS_SCRIPT),
-        str(input_path),
-        "--nsweeps",
-        str(nsweeps),
-        "--fft-oversample",
-        str(fft_oversample),
-        "--skip-png",
-    ]
-    _run_command(process_cmd, cwd=run_dir)
 
-    pkl_path = run_dir / "sar_img.p"
-    if not pkl_path.exists():
-        raise HTTPException(status_code=500, detail="sar_img.p was not generated")
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str) -> dict:
+    job = STORE.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
 
-    cart_cmd = [
-        sys.executable,
-        str(CART_SCRIPT),
-        str(pkl_path),
-        "--dpi",
-        str(dpi),
-    ]
-    if max_side is not None:
-        cart_cmd.extend(["--max-side", str(max_side)])
-    _run_command(cart_cmd, cwd=run_dir)
+    manifest = json.loads(job.result_manifest_json) if job.result_manifest_json else {}
+    params = json.loads(job.params_json) if job.params_json else {}
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "stage": job.stage,
+        "progress": job.progress,
+        "error": job.error_message,
+        "profile": job.profile,
+        "params": params,
+        "result_manifest": manifest,
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+    }
 
-    output_image = run_dir / "sar_img_cart.png"
-    if not output_image.exists():
-        raise HTTPException(status_code=500, detail="sar_img_cart.png was not generated")
 
-    return FileResponse(
-        path=str(output_image),
-        media_type="image/png",
-        filename="sar_img_cart.png",
-        background=BackgroundTask(shutil.rmtree, run_dir, True),
+@app.get("/jobs/{job_id}/manifest")
+def job_manifest(job_id: str) -> dict:
+    job = STORE.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return json.loads(job.result_manifest_json) if job.result_manifest_json else {}
+
+
+@app.post("/process")
+async def process_back_compat(
+    file: UploadFile = File(...),
+    nsweeps: int = Form(10000),
+    fft_oversample: float = Form(1.5),
+    dpi: int = Form(700),
+    max_side: int | None = Form(None),
+) -> dict:
+    return await submit_job(
+        file=file,
+        nsweeps=nsweeps,
+        fft_oversample=fft_oversample,
+        dpi=dpi,
+        max_side=max_side,
     )
 
 
