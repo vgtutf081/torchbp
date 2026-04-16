@@ -4,6 +4,7 @@ numpy
 scipy
 safetensors
 packaging
+tifffile
 redis
 rq
 boto3

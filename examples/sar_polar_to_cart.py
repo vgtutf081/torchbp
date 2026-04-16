@@ -3,14 +3,36 @@
 import pickle
 import os
 import argparse
+import json
+from pathlib import Path
 import matplotlib.pyplot as plt
+import numpy as np
 import torchbp
 from torchbp.util import entropy
 from torchbp.grid import PolarGrid, CartesianGrid
+from torchbp.output import write_geotiff, write_world_file
 from torchbp.gpu import require_cuda, has_cuda_kernel
 import torch
 import sys
 import torch.nn.functional as F
+
+
+def _load_json_config(path: str | None) -> dict:
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("Config JSON must be an object")
+    return data
+
+
+def _resolve_value(cli_value, config: dict, key: str, default=None):
+    if cli_value is not None:
+        return cli_value
+    if key in config:
+        return config[key]
+    return default
 
 
 def polar_to_cart_fallback_gpu(
@@ -47,8 +69,15 @@ def polar_to_cart_fallback_gpu(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert SAR polar image to cartesian")
-    parser.add_argument("filename", nargs="?", default="sar_img.p")
-    parser.add_argument("--dpi", type=int, default=700, help="Output PNG DPI")
+    parser.add_argument("filename", nargs="?", default=None)
+    parser.add_argument("--config", type=str, default=None, help="Path to JSON config")
+    parser.add_argument("--dpi", type=int, default=None, help="Output PNG DPI")
+    parser.add_argument(
+        "--output-prefix",
+        type=str,
+        default=None,
+        help="Output filename prefix (default: sar_img)",
+    )
     parser.add_argument(
         "--max-side",
         type=int,
@@ -56,8 +85,10 @@ if __name__ == "__main__":
         help="Maximum output side in pixels (keeps aspect ratio).",
     )
     args = parser.parse_args()
+    config = _load_json_config(args.config)
+    output_prefix = str(_resolve_value(args.output_prefix, config, "output_prefix", "sar_img"))
 
-    filename = args.filename
+    filename = _resolve_value(args.filename, config, "filename", "sar_img.p")
     # Check in examples directory if file not found in current directory
     if not os.path.exists(filename) and os.path.exists(os.path.join("examples", filename)):
         filename = os.path.join("examples", filename)
@@ -74,11 +105,11 @@ if __name__ == "__main__":
     print("Entropy", entropy(sar_img).item())
 
     # Increase Cartesian image size
-    oversample = 1
+    oversample = int(config.get("oversample", 1))
     # Increases image size, but then resamples it down by the same amount
     # Can be used for multilook processing, when the input polar format data
     # resolution is higher than can fit into the Cartesian grid
-    multilook = 2
+    multilook = int(config.get("multilook", 2))
     grid = grid.resize(
         nx=int(oversample * grid.nx * multilook),
         ny=int(oversample * grid.ny * multilook)
@@ -106,8 +137,9 @@ if __name__ == "__main__":
     extent = [grid.x0, grid.x1, grid.y0, grid.y1]
     img_db = torch.abs(sar_img_cart) + 1e-10
     out_shape = [img_db.shape[-2] // multilook, img_db.shape[-1] // multilook]
-    if args.max_side is not None:
-        max_side = max(1, int(args.max_side))
+    max_side_value = _resolve_value(args.max_side, config, "max_side", None)
+    if max_side_value is not None:
+        max_side = max(1, int(max_side_value))
         current_max = max(out_shape)
         if current_max > max_side:
             scale = max_side / current_max
@@ -124,10 +156,30 @@ if __name__ == "__main__":
     ).squeeze()
     img_db = 20 * torch.log10(img_db)
     img_db = img_db.cpu().numpy()
+    img_linear = np.power(10.0, img_db / 20.0)
+    raster = img_linear.T.astype("float32")
+
+    geotiff_path = f"{output_prefix}.tif"
+    world_file_path = f"{output_prefix}_cart.pgw"
+    write_geotiff(
+        Path(geotiff_path),
+        raster,
+        metadata={"format": "torchbp", "source": "sar_polar_to_cart"},
+    )
+    write_world_file(
+        Path(world_file_path),
+        xmin=grid.x0,
+        xmax=grid.x1,
+        ymin=grid.y0,
+        ymax=grid.y1,
+        width=raster.shape[1],
+        height=raster.shape[0],
+    )
 
     plt.imshow(img_db.T, origin="lower", aspect="equal", vmin=m, vmax=m2, extent=extent)
     plt.grid(False)
-    plt.savefig("sar_img_cart.png", dpi=args.dpi)
+    dpi = int(_resolve_value(args.dpi, config, "dpi", 700))
+    plt.savefig(f"{output_prefix}_cart.png", dpi=dpi)
     plt.xlabel("X (m)")
     plt.ylabel("Y (m)")
 
