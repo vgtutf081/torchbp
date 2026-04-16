@@ -9,6 +9,7 @@ from .models import ProcessParams
 from .queueing import InlineQueueBackend, RQQueueBackend
 from .settings import load_settings
 from .worker import run_job
+from torchbp.profiles import normalize_profile
 
 
 SETTINGS = load_settings()
@@ -45,6 +46,7 @@ async def submit_job(
     fft_oversample: float = Form(1.5),
     dpi: int = Form(700),
     max_side: int | None = Form(None),
+    profile: str = Form("standard"),
 ) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Input filename is missing")
@@ -56,6 +58,10 @@ async def submit_job(
         raise HTTPException(status_code=400, detail="fft_oversample must be > 0")
     if dpi <= 0:
         raise HTTPException(status_code=400, detail="dpi must be > 0")
+    try:
+        profile_name = normalize_profile(profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     payload = await file.read()
     params = ProcessParams(
@@ -63,7 +69,7 @@ async def submit_job(
         fft_oversample=fft_oversample,
         dpi=dpi,
         max_side=max_side,
-        profile="standard",
+        profile=profile_name,
     )
     job_id, _, reused = prepare_job(
         filename=file.filename,
@@ -126,6 +132,7 @@ async def process_back_compat(
     fft_oversample: float = Form(1.5),
     dpi: int = Form(700),
     max_side: int | None = Form(None),
+    profile: str = Form("standard"),
 ) -> dict:
     return await submit_job(
         file=file,
@@ -133,6 +140,7 @@ async def process_back_compat(
         fft_oversample=fft_oversample,
         dpi=dpi,
         max_side=max_side,
+        profile=profile,
     )
 
 

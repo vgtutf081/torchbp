@@ -133,6 +133,8 @@ def run_job(
                 "--fft-oversample",
                 str(float(params["fft_oversample"])),
                 "--skip-png",
+                "--profile",
+                str(params.get("profile", "standard")),
             ]
             _run_command(process_cmd, work_dir)
         stage_metrics["backprojection"] = {
@@ -161,6 +163,10 @@ def run_job(
                 str(pkl_path),
                 "--dpi",
                 str(int(params["dpi"])),
+                "--profile",
+                str(params.get("profile", "standard")),
+                "--output-prefix",
+                str(params.get("output_prefix", "sar_img")),
             ]
             max_side = params.get("max_side")
             if max_side is not None:

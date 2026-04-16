@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torchbp
+from torchbp.profiles import cart_profile_defaults, normalize_profile
 from torchbp.util import entropy
 from torchbp.grid import PolarGrid, CartesianGrid
 from torchbp.output import write_geotiff, write_world_file
@@ -71,6 +72,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert SAR polar image to cartesian")
     parser.add_argument("filename", nargs="?", default=None)
     parser.add_argument("--config", type=str, default=None, help="Path to JSON config")
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Processing profile: fast_preview|standard|high_quality",
+    )
     parser.add_argument("--dpi", type=int, default=None, help="Output PNG DPI")
     parser.add_argument(
         "--output-prefix",
@@ -86,6 +93,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     config = _load_json_config(args.config)
+    profile = normalize_profile(_resolve_value(args.profile, config, "profile", "standard"))
+    profile_defaults = cart_profile_defaults(profile)
     output_prefix = str(_resolve_value(args.output_prefix, config, "output_prefix", "sar_img"))
 
     filename = _resolve_value(args.filename, config, "filename", "sar_img.p")
@@ -105,11 +114,11 @@ if __name__ == "__main__":
     print("Entropy", entropy(sar_img).item())
 
     # Increase Cartesian image size
-    oversample = int(config.get("oversample", 1))
+    oversample = int(config.get("oversample", profile_defaults["oversample"]))
     # Increases image size, but then resamples it down by the same amount
     # Can be used for multilook processing, when the input polar format data
     # resolution is higher than can fit into the Cartesian grid
-    multilook = int(config.get("multilook", 2))
+    multilook = int(config.get("multilook", profile_defaults["multilook"]))
     grid = grid.resize(
         nx=int(oversample * grid.nx * multilook),
         ny=int(oversample * grid.ny * multilook)
@@ -137,7 +146,7 @@ if __name__ == "__main__":
     extent = [grid.x0, grid.x1, grid.y0, grid.y1]
     img_db = torch.abs(sar_img_cart) + 1e-10
     out_shape = [img_db.shape[-2] // multilook, img_db.shape[-1] // multilook]
-    max_side_value = _resolve_value(args.max_side, config, "max_side", None)
+    max_side_value = _resolve_value(args.max_side, config, "max_side", profile_defaults["max_side"])
     if max_side_value is not None:
         max_side = max(1, int(max_side_value))
         current_max = max(out_shape)
@@ -178,7 +187,7 @@ if __name__ == "__main__":
 
     plt.imshow(img_db.T, origin="lower", aspect="equal", vmin=m, vmax=m2, extent=extent)
     plt.grid(False)
-    dpi = int(_resolve_value(args.dpi, config, "dpi", 700))
+    dpi = int(_resolve_value(args.dpi, config, "dpi", profile_defaults["dpi"]))
     plt.savefig(f"{output_prefix}_cart.png", dpi=dpi)
     plt.xlabel("X (m)")
     plt.ylabel("Y (m)")

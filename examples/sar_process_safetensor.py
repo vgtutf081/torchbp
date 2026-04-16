@@ -4,6 +4,7 @@
 import sys
 import os
 import argparse
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.signal as signal
@@ -11,6 +12,7 @@ import pickle
 import torch 
 import torch.nn.functional as F
 import torchbp
+from torchbp.profiles import normalize_profile, process_profile_defaults
 from torchbp.util import make_polar_grid
 from torchbp.grid import CartesianGrid
 from torchbp.gpu import require_cuda, has_cuda_kernel
@@ -88,65 +90,103 @@ def range_doppler_fallback_gpu(fsweeps: torch.Tensor, nr: int, ntheta: int) -> t
     return torch.complex(img_resized[0, 0], img_resized[0, 1])
 
 
+def _load_json_config(path: str | None) -> dict:
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("Config JSON must be an object")
+    return data
+
+
+def _resolve_value(cli_value, config: dict, key: str, default=None):
+    if cli_value is not None:
+        return cli_value
+    if key in config:
+        return config[key]
+    return default
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process SAR safetensors input")
-    parser.add_argument("filename", nargs="?", default="sar.safetensors")
+    parser.add_argument("filename", nargs="?", default=None)
+    parser.add_argument("--config", type=str, default=None, help="Path to JSON config")
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Processing profile: fast_preview|standard|high_quality",
+    )
     parser.add_argument(
         "--nsweeps",
         type=int,
-        default=10000,
+        default=None,
         help="Number of sweeps to process. Use -1 to process all available sweeps.",
     )
     parser.add_argument(
         "--fft-oversample",
         type=float,
-        default=1.5,
+        default=None,
         help="FFT oversampling factor. Lower values reduce memory usage.",
     )
     parser.add_argument(
         "--skip-png",
         action="store_true",
+        default=None,
         help="Skip saving sar_img.png to reduce RAM usage on very large runs.",
     )
     args = parser.parse_args()
+    config = _load_json_config(args.config)
+    profile = normalize_profile(_resolve_value(args.profile, config, "profile", "standard"))
+    profile_defaults = process_profile_defaults(profile)
 
-    filename = args.filename
+    filename = _resolve_value(args.filename, config, "filename", "sar.safetensors")
     # Check in examples directory if file not found in current directory
     if not os.path.exists(filename) and os.path.exists(os.path.join("examples", filename)):
         filename = os.path.join("examples", filename)
 
     # Final image dimensions
-    x0 = 1
-    x1 = 2000
+    x0 = float(config.get("x0", 1))
+    x1 = float(config.get("x1", 2000))
     # Image dimensions during autofocus, typically smaller than the final image
-    autofocus_x0 = 400
-    autofocus_x1 = 1200
-    autofocus_theta_limit = 0.8
+    autofocus_x0 = float(config.get("autofocus_x0", 400))
+    autofocus_x1 = float(config.get("autofocus_x1", 1200))
+    autofocus_theta_limit = float(config.get("autofocus_theta_limit", 0.8))
     # Azimuth range in polar image in sin of radians. 1 for full 180 degrees.
-    theta_limit = 1
+    theta_limit = float(config.get("theta_limit", 1))
     # Decrease the number of sweeps to speed up the calculation
-    nsweeps = args.nsweeps
-    sweep_start = 0
+    nsweeps = int(_resolve_value(args.nsweeps, config, "nsweeps", profile_defaults["nsweeps"]))
+    sweep_start = int(config.get("sweep_start", 0))
     # Maximum number of autofocus iterations
-    max_steps = 15
+    max_steps = int(config.get("max_steps", profile_defaults["max_steps"]))
     # Maximum autofocus position update in wavelengths
     # Optimal value depends on the maximum error in the image
-    max_step_limit = 0.5  # Try 5 with 50k sweeps
-    data_dtype = torch.complex64  # Can be `torch.complex32` to save VRAM
+    max_step_limit = float(config.get("max_step_limit", 0.5))  # Try 5 with 50k sweeps
+    dtype_map = {
+        "complex64": torch.complex64,
+        "complex32": torch.complex32,
+    }
+    data_dtype_name = str(config.get("data_dtype", "complex64")).lower()
+    data_dtype = dtype_map.get(data_dtype_name, torch.complex64)
 
     # Windowing functions
-    range_window = "hamming"
-    angle_window = ("taylor", 4, 50)
+    range_window = config.get("range_window", "hamming")
+    angle_window = tuple(config.get("angle_window", ["taylor", 4, 50]))
     # FFT oversampling factor. Increase to decrease interpolation error.
-    fft_oversample = args.fft_oversample
+    fft_oversample = float(
+        _resolve_value(args.fft_oversample, config, "fft_oversample", profile_defaults["fft_oversample"])
+    )
     dev = require_cuda()
     print(f"Using device: {dev}")
     # Distance in radar data corresponding to zero actual distance
     # Slightly higher than zero due to antenna feedlines and other delays.
-    d0 = 0.5
+    d0 = float(config.get("d0", 0.5))
 
     # Calculate initial estimate using PGA
-    initial_pga = False
+    initial_pga = bool(config.get("initial_pga", False))
+
+    skip_png = bool(_resolve_value(args.skip_png, config, "skip_png", False))
 
     c0 = 299792458
 
@@ -350,7 +390,7 @@ if __name__ == "__main__":
     print("Entropy", torchbp.util.entropy(sar_img).item())
     sar_img = sar_img.cpu().numpy()
 
-    if not args.skip_png:
+    if not skip_png:
         plt.figure()
         extent = [grid_polar.r0, grid_polar.r1, grid_polar.theta0, grid_polar.theta1]
         abs_img = np.abs(sar_img)
@@ -364,7 +404,7 @@ if __name__ == "__main__":
         print("Exporting image")
         plt.savefig("sar_img.png", dpi=400)
     else:
-        print("Skipping sar_img.png export (--skip-png)")
+        print("Skipping sar_img.png export (--skip-png or config)")
 
     # Export image as pickle file
     with open("sar_img.p", "wb") as f:
