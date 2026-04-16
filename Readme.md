@@ -198,19 +198,70 @@ Notes:
 - `tests.test_examples_smoke` is CUDA-only and auto-skips if CUDA is unavailable.
 - The smoke test is intended for quick validation in development and CI.
 
-## API
+## API and Web Application
 
-Production-style API server is provided in `api/app.py`.
+Production-style API server is provided in `api/app.py`. The system is composed of:
 
-### Start API
+- **API Server** (`uvicorn`) — HTTP endpoints, validation, job queueing
+- **Job Worker** (`rq`) — dequeues and executes jobs on GPU
+- **Redis** — message broker for job queue (can be local or remote)
+
+### Architecture
+
+```
+Browser/Client → API Server (HTTP) → Redis Queue → Job Worker → GPU → Artifacts DB
+     (UI)          port 8000          in-memory      processes      SQLite
+                  (localhost:8000)                     on GPU
+```
+
+### Prerequisites
+
+Before running the API, ensure you have:
+
+1. **PyTorch with CUDA support** (see Installation section)
+2. **Redis server** running (for job queue)
+   - On Windows: Download from https://github.com/microsoftarchive/redis/releases or use WSL
+   - On Linux: `apt-get install redis-server` or `brew install redis`
+
+### Quick start (single machine)
+
+**Terminal 1: Start Redis** (if not already running)
+
+```bash
+redis-server
+```
+
+**Terminal 2: Start API Server**
 
 ```bash
 python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
 ```
 
+**Terminal 3: Start Job Worker** (processes jobs on GPU)
+
+```bash
+python -m rq worker jobs_queue -u redis://localhost:6379
+```
+
+Now open:
+
+```text
+http://127.0.0.1:8000/ui
+```
+
+### Start API only
+
+For development or testing without job execution:
+
+```bash
+python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
+```
+
+Note: Jobs will queue but won't process without an active worker.
+
 ### Web application UI
 
-After server startup open:
+After server startup, open:
 
 ```text
 http://127.0.0.1:8000/ui
@@ -220,9 +271,9 @@ UI supports:
 
 - upload `.safetensors`
 - profile and parameter controls (`nsweeps`, `fft_oversample`, `dpi`, `max_side`, `write_world_file`)
-- live stage/overall progress
+- live stage/overall progress (polls every 1.5s)
 - cancel active job
-- artifact links and quicklook preview
+- download artifacts and quicklook preview (PNG)
 
 Health check:
 
@@ -418,3 +469,249 @@ CI split:
 - `nightly benchmark`: throughput/latency benchmark on schedule
 
 All workflows upload logs as artifacts.
+
+## Deployment
+
+### Single-machine deployment
+
+For testing or small deployments, all services run on one machine:
+
+**1. Install dependencies on target machine**
+
+```bash
+git clone https://github.com/Ttl/torchbp.git
+cd torchbp
+python -m venv .venv
+source .venv/bin/activate  # or .\.venv\Scripts\Activate.ps1 on Windows
+pip install -U pip torch --index-url https://download.pytorch.org/whl/cu130
+USE_CUDA=1 FORCE_CUDA=1 pip install --no-build-isolation -e .
+pip install -r requirements.txt
+```
+
+**2. Configure storage and queue** (optional, uses defaults)
+
+```bash
+export TORCHBP_STORAGE_BACKEND=local             # local or s3
+export TORCHBP_STORAGE_PATH=api_runs
+export TORCHBP_REDIS_URL=redis://localhost:6379
+```
+
+**3. Start services** (in separate terminals)
+
+Terminal 1 — Redis:
+```bash
+redis-server
+```
+
+Terminal 2 — API:
+```bash
+python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
+```
+
+Terminal 3 — Worker (processes jobs on GPU):
+```bash
+python -m rq worker jobs_queue -u redis://localhost:6379
+```
+
+Access UI at `http://<machine-ip>:8000/ui`
+
+### Multi-machine deployment (Docker)
+
+For production or distributed setup:
+
+**Docker Compose example** (`docker-compose.yml`):
+
+```yaml
+version: '3.9'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      TORCHBP_REDIS_URL: redis://redis:6379
+      TORCHBP_STORAGE_BACKEND: local
+    depends_on:
+      - redis
+    volumes:
+      - ./api_runs:/app/api_runs
+
+  worker:
+    build: .
+    environment:
+      TORCHBP_REDIS_URL: redis://redis:6379
+      TORCHBP_STORAGE_BACKEND: local
+    depends_on:
+      - redis
+    volumes:
+      - ./api_runs:/app/api_runs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: python -m rq worker jobs_queue -u redis://redis:6379
+
+volumes:
+  redis_data:
+```
+
+Build and start:
+
+```bash
+docker-compose up -d
+```
+
+### Configuration
+
+Key environment variables:
+
+- `TORCHBP_STORAGE_BACKEND`: `local` (filesystem) or `s3` (S3/MinIO)
+- `TORCHBP_STORAGE_PATH`: path to artifacts directory (default: `api_runs`)
+- `TORCHBP_REDIS_URL`: Redis connection string (default: `redis://localhost:6379`)
+- `TORCHBP_DB_PATH`: SQLite database path (default: `api_runs/jobs.db`)
+
+Version fingerprinting (optional):
+
+- `TORCHBP_PIPELINE_VERSION`
+- `TORCHBP_ALGORITHM_VERSION`
+- `TORCHBP_PROFILE_VERSION`
+- `TORCHBP_SCHEMA_VERSION`
+- `TORCHBP_CALIBRATION_VERSION`
+- `TORCHBP_DEM_VERSION`
+
+S3 storage (if `TORCHBP_STORAGE_BACKEND=s3`):
+
+- `TORCHBP_S3_ENDPOINT`: S3 endpoint URL
+- `TORCHBP_S3_BUCKET`: bucket name
+- `TORCHBP_S3_ACCESS_KEY_ID`: AWS access key
+- `TORCHBP_S3_SECRET_ACCESS_KEY`: AWS secret key
+
+### Systemd service files (Linux)
+
+`/etc/systemd/system/torchbp-api.service`:
+
+```ini
+[Unit]
+Description=Torchbp API Server
+After=network.target redis.service
+Requires=redis.service
+
+[Service]
+User=torchbp
+WorkingDirectory=/opt/torchbp
+Environment="PATH=/opt/torchbp/.venv/bin"
+ExecStart=/opt/torchbp/.venv/bin/python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/torchbp-worker.service`:
+
+```ini
+[Unit]
+Description=Torchbp Job Worker
+After=network.target redis.service
+Requires=redis.service
+
+[Service]
+User=torchbp
+WorkingDirectory=/opt/torchbp
+Environment="PATH=/opt/torchbp/.venv/bin"
+ExecStart=/opt/torchbp/.venv/bin/python -m rq worker jobs_queue -u redis://localhost:6379
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl enable torchbp-api.service torchbp-worker.service
+sudo systemctl start torchbp-api.service torchbp-worker.service
+```
+
+Check status:
+
+```bash
+sudo systemctl status torchbp-api.service
+sudo systemctl status torchbp-worker.service
+```
+
+## Troubleshooting
+
+### "Submit" button does nothing
+
+**Cause**: Worker is not running.
+
+**Solution**: Start the worker process (see "Quick start" section), then resubmit.
+
+### 500 Internal Server Error on `/jobs` submit
+
+**Cause**: Usually a schema mismatch or Redis connection issue.
+
+**Check**:
+```bash
+# Verify Redis is accessible
+redis-cli ping
+
+# Verify worker is running
+ps aux | grep "rq worker"
+```
+
+If Redis/worker is missing, start them first.
+
+### "torch.cuda.is_available() returns False"
+
+**Cause**: Wrong Python environment or CUDA mismatch.
+
+**Solution**:
+```bash
+# Verify correct venv is activated
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
+
+# Expected: version contains cu130 and cuda available is True
+```
+
+If CUDA is unavailable, reinstall PyTorch with correct CUDA wheels:
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu130 --force-reinstall
+```
+
+### Redis connection refused
+
+**Linux/macOS**:
+```bash
+redis-server &  # Start Redis in background
+```
+
+**Windows**:
+- Use WSL: `wsl redis-server`
+- Or download from https://github.com/microsoftarchive/redis/releases
+- Or use Docker: `docker run -d -p 6379:6379 redis:7-alpine`
+
+### Job stuck in "queued" state
+
+**Cause**: Worker process crashed or was never started.
+
+**Check**:
+```bash
+# Verify worker is running
+python -m rq info -u redis://localhost:6379
+
+# Restart worker if needed
+python -m rq worker jobs_queue -u redis://localhost:6379
+```
