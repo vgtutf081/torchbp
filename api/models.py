@@ -33,6 +33,7 @@ class ProcessParams:
     profile: str = "standard"
     output_prefix: str = "sar_img"
     write_world_file: bool = False
+    algorithm: str = "backprojection"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,4 +44,5 @@ class ProcessParams:
             "profile": self.profile,
             "output_prefix": self.output_prefix,
             "write_world_file": self.write_world_file,
+            "algorithm": self.algorithm,
         }

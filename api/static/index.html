@@ -42,6 +42,15 @@
           </select>
         </div>
         <div>
+          <label>Algorithm</label>
+          <select id="algorithm">
+            <option value="backprojection">backprojection (fast)</option>
+            <option value="knab">knab (omega-k, best)</option>
+            <option value="lanczos">lanczos</option>
+            <option value="ffbp">ffbp (fastest)</option>
+          </select>
+        </div>
+        <div>
           <label>nsweeps</label>
           <input type="number" id="nsweeps" min="1" value="10000" />
         </div>
@@ -175,6 +184,7 @@
       const fd = new FormData();
       fd.append('file', fileInput.files[0]);
       fd.append('profile', document.getElementById('profile').value);
+      fd.append('algorithm', document.getElementById('algorithm').value);
       fd.append('nsweeps', document.getElementById('nsweeps').value);
       fd.append('fft_oversample', document.getElementById('fft_oversample').value);
       fd.append('dpi', document.getElementById('dpi').value);

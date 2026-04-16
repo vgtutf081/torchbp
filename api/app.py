@@ -83,6 +83,7 @@ async def submit_job(
     dpi: int = Form(700),
     max_side: int | None = Form(None),
     profile: str = Form("standard"),
+    algorithm: str = Form("backprojection"),
     write_world_file: bool = Form(False),
 ) -> dict:
     if not file.filename:
@@ -112,6 +113,7 @@ async def submit_job(
         max_side=max_side,
         profile=profile_name,
         write_world_file=bool(write_world_file),
+        algorithm=algorithm,
     )
     job_id, _, reused = prepare_job(
         filename=file.filename,

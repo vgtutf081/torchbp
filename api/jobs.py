@@ -258,6 +258,8 @@ def run_job(
                 "--skip-png",
                 "--profile",
                 str(params.get("profile", "standard")),
+                "--algorithm",
+                str(params.get("algorithm", "backprojection")),
             ]
             process_stdout, process_stderr = _run_command(process_cmd, work_dir)
             (logs_dir / "backprojection.stdout.log").write_text(process_stdout, encoding="utf-8")
