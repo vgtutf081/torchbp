@@ -1,7 +1,6 @@
 import os
 import torch
 import glob
-from packaging.version import Version
 
 from setuptools import find_packages, setup
 
@@ -14,18 +13,17 @@ from torch.utils.cpp_extension import (
 
 library_name = "torchbp"
 
-if Version(torch.__version__) >= Version("2.6.0"):
-    py_limited_api = True
-else:
-    py_limited_api = False
+py_limited_api = False
 
 def get_extensions():
     debug_mode = os.getenv("DEBUG", "0") == "1"
     use_cuda = os.getenv("USE_CUDA", "1") == "1"
+    force_cuda = os.getenv("FORCE_CUDA", "0") == "1"
+    is_windows = os.name == "nt"
     if debug_mode:
         print("Compiling in debug mode")
 
-    use_cuda = use_cuda and torch.cuda.is_available() and CUDA_HOME is not None
+    use_cuda = use_cuda and (torch.cuda.is_available() or force_cuda) and CUDA_HOME is not None
     extension = CUDAExtension if use_cuda else CppExtension
 
     if use_cuda:
@@ -33,27 +31,42 @@ def get_extensions():
     else:
         print("No cuda support")
 
-    extra_link_args = ["-fopenmp"]
-    extra_compile_args = {
-        "cxx": [
-            "-O3" if not debug_mode else "-O0",
-            "-fdiagnostics-color=always",
-            "-fopenmp",
-            "-DPy_LIMITED_API=0x03090000", # Min Python version 3.9
-        ],
-        "nvcc": [
-            "-O3" if not debug_mode else "-O0",
-            "-DLIBCUDACXX_ENABLE_SIMPLIFIED_COMPLEX_OPERATIONS",
-            "--use_fast_math",
-            "-lineinfo"
-        ],
-    }
+    if is_windows:
+        extra_link_args = []
+        extra_compile_args = {
+            "cxx": [
+                "/O2" if not debug_mode else "/Od",
+                "/openmp",
+            ],
+            "nvcc": [
+                "-O3" if not debug_mode else "-O0",
+                "-DLIBCUDACXX_ENABLE_SIMPLIFIED_COMPLEX_OPERATIONS",
+                "--use_fast_math",
+                "-lineinfo",
+                "-Xcompiler=/openmp",
+            ],
+        }
+    else:
+        extra_link_args = ["-fopenmp"]
+        extra_compile_args = {
+            "cxx": [
+                "-O3" if not debug_mode else "-O0",
+                "-fdiagnostics-color=always",
+                "-fopenmp",
+            ],
+            "nvcc": [
+                "-O3" if not debug_mode else "-O0",
+                "-DLIBCUDACXX_ENABLE_SIMPLIFIED_COMPLEX_OPERATIONS",
+                "--use_fast_math",
+                "-lineinfo"
+            ],
+        }
     if debug_mode:
         extra_compile_args["cxx"].append("-g")
         extra_compile_args["nvcc"].extend(["-g", "-G"])
         extra_link_args.extend(["-O0", "-g"])
 
-    this_dir = os.path.dirname(os.path.curdir)
+    this_dir = os.path.dirname(os.path.abspath(__file__))
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
 
@@ -99,5 +112,4 @@ setup(
     long_description_content_type="text/markdown",
     #url="",
     cmdclass={"build_ext": BuildExtension},
-    options={"bdist_wheel": {"py_limited_api": "cp39"}} if py_limited_api else {},
 )

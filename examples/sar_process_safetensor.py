@@ -2,14 +2,18 @@
 # Example SAR data processing script.
 # Sample data can be downloaded from: https://hforsten.com/sar.safetensors.zip
 import sys
+import os
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.signal as signal
 import pickle
-import torch
+import torch 
+import torch.nn.functional as F
 import torchbp
 from torchbp.util import make_polar_grid
 from torchbp.grid import CartesianGrid
+from torchbp.gpu import require_cuda, has_cuda_kernel
 from safetensors.torch import safe_open
 
 plt.style.use("ggplot")
@@ -64,7 +68,7 @@ def grid_extent(pos, att, min_range, max_range, bw=0, origin_angle=0):
 
 def load_data(filename):
     tensors = {}
-    with safe_open(filename, framework="pt", device="cpu") as f:
+    with safe_open(filename, framework="pt", device="cuda") as f:
         for key in f.keys():
             tensors[key] = f.get_tensor(key)
         mission = f.metadata()
@@ -72,10 +76,44 @@ def load_data(filename):
     return mission, tensors
 
 
+def range_doppler_fallback_gpu(fsweeps: torch.Tensor, nr: int, ntheta: int) -> torch.Tensor:
+    img = torch.fft.fftshift(torch.fft.fft(fsweeps, dim=0), dim=0).T
+    img_ri = torch.view_as_real(img).permute(2, 0, 1).unsqueeze(0)
+    img_resized = F.interpolate(
+        img_ri,
+        size=(nr, ntheta),
+        mode="bilinear",
+        align_corners=False,
+    )
+    return torch.complex(img_resized[0, 0], img_resized[0, 1])
+
+
 if __name__ == "__main__":
-    filename = "sar.safetensors"
-    if len(sys.argv) > 1:
-        filename = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Process SAR safetensors input")
+    parser.add_argument("filename", nargs="?", default="sar.safetensors")
+    parser.add_argument(
+        "--nsweeps",
+        type=int,
+        default=10000,
+        help="Number of sweeps to process. Use -1 to process all available sweeps.",
+    )
+    parser.add_argument(
+        "--fft-oversample",
+        type=float,
+        default=1.5,
+        help="FFT oversampling factor. Lower values reduce memory usage.",
+    )
+    parser.add_argument(
+        "--skip-png",
+        action="store_true",
+        help="Skip saving sar_img.png to reduce RAM usage on very large runs.",
+    )
+    args = parser.parse_args()
+
+    filename = args.filename
+    # Check in examples directory if file not found in current directory
+    if not os.path.exists(filename) and os.path.exists(os.path.join("examples", filename)):
+        filename = os.path.join("examples", filename)
 
     # Final image dimensions
     x0 = 1
@@ -87,7 +125,7 @@ if __name__ == "__main__":
     # Azimuth range in polar image in sin of radians. 1 for full 180 degrees.
     theta_limit = 1
     # Decrease the number of sweeps to speed up the calculation
-    nsweeps = 10000 # Max 51200
+    nsweeps = args.nsweeps
     sweep_start = 0
     # Maximum number of autofocus iterations
     max_steps = 15
@@ -100,8 +138,9 @@ if __name__ == "__main__":
     range_window = "hamming"
     angle_window = ("taylor", 4, 50)
     # FFT oversampling factor. Increase to decrease interpolation error.
-    fft_oversample = 1.5
-    dev = torch.device("cuda")
+    fft_oversample = args.fft_oversample
+    dev = require_cuda()
+    print(f"Using device: {dev}")
     # Distance in radar data corresponding to zero actual distance
     # Slightly higher than zero due to antenna feedlines and other delays.
     d0 = 0.5
@@ -116,8 +155,13 @@ if __name__ == "__main__":
         mission, tensors = load_data(filename)
     except FileNotFoundError:
         print(f"Input file {filename} not found.")
+        sys.exit(1)
 
-    sweeps = tensors["data"][sweep_start:sweep_start+nsweeps].to(dtype=torch.float32)
+    available_sweeps = tensors["data"].shape[0] - sweep_start
+    if nsweeps <= 0 or nsweeps > available_sweeps:
+        nsweeps = available_sweeps
+
+    sweeps = tensors["data"][sweep_start:sweep_start+nsweeps].to(dtype=torch.float32, device=dev)
     pos = tensors["pos"][sweep_start:sweep_start+nsweeps].cpu().numpy()
     att = tensors["att"][sweep_start:sweep_start+nsweeps].cpu().numpy()
     counts = tensors["counts"][sweep_start:sweep_start+nsweeps]
@@ -191,8 +235,8 @@ if __name__ == "__main__":
     v_orig = v.detach().clone()
 
     # Apply windowing
-    sweeps *= wa[:, None, None].cpu()
-    sweeps *= wr[None, None, :].cpu()
+    sweeps *= wa[:, None, None]
+    sweeps *= wr[None, None, :]
 
     # Modulation frequency to center the data spectrum to DC for decreased
     # interpolation error.
@@ -229,11 +273,20 @@ if __name__ == "__main__":
     pos = pos.to(device=dev)
     data_time = data_time.to(device=dev)
 
-    if max_steps > 1:
+    has_bp_cuda = has_cuda_kernel("torchbp::backprojection_polar_2d")
+    if not has_bp_cuda:
+        print(
+            "CUDA kernel torchbp::backprojection_polar_2d missing; "
+            "using GPU fallback for final image."
+        )
+
+    dev_ops = dev
+
+    if max_steps > 1 and has_bp_cuda:
         if initial_pga:
             print("Calculating initial estimate with PGA")
             origin = torch.tensor([torch.mean(pos[:,0]), torch.mean(pos[:,1]), 0],
-                    device=dev, dtype=torch.float32)[None,:]
+                    device=dev_ops, dtype=torch.float32)[None,:]
             pos_centered = pos - origin
             sar_img, phi = torchbp.autofocus.gpga_bp_polar(None, fsweeps,
                     pos_centered, fc, r_res, grid_polar_autofocus,
@@ -265,6 +318,7 @@ if __name__ == "__main__":
             fixed_pos=0,
             data_fmod=data_fmod
         )
+
         v = torch.diff(pos, dim=0, prepend=pos[0].unsqueeze(0)) / sweep_interval
 
         plt.figure()
@@ -283,28 +337,34 @@ if __name__ == "__main__":
 
     origin = torch.tensor(
         [torch.mean(pos[:, 0]), torch.mean(pos[:, 1]), 0],
-        device=dev,
+        device=dev_ops,
         dtype=torch.float32,
     )[None, :]
     pos_centered = pos - origin
     print("Focusing final image")
-    sar_img = torchbp.ops.backprojection_polar_2d( fsweeps, grid_polar, fc,
-            r_res, pos_centered, d0, data_fmod=data_fmod).squeeze()
+    if has_bp_cuda:
+        sar_img = torchbp.ops.backprojection_polar_2d( fsweeps, grid_polar, fc,
+                r_res, pos_centered, d0, data_fmod=data_fmod).squeeze()
+    else:
+        sar_img = range_doppler_fallback_gpu(fsweeps, grid_polar.nr, grid_polar.ntheta)
     print("Entropy", torchbp.util.entropy(sar_img).item())
     sar_img = sar_img.cpu().numpy()
 
-    plt.figure()
-    extent = [grid_polar.r0, grid_polar.r1, grid_polar.theta0, grid_polar.theta1]
-    abs_img = np.abs(sar_img)
-    m = 20 * np.log10(np.median(abs_img)) - 13
-    plt.imshow(
-        20 * np.log10(abs_img).T, aspect="auto", origin="lower", extent=extent, vmin=m
-    )
-    plt.grid(False)
-    plt.xlabel("Range (m)")
-    plt.ylabel("Angle (sin(radians))")
-    print("Exporting image")
-    plt.savefig("sar_img.png", dpi=400)
+    if not args.skip_png:
+        plt.figure()
+        extent = [grid_polar.r0, grid_polar.r1, grid_polar.theta0, grid_polar.theta1]
+        abs_img = np.abs(sar_img)
+        m = 20 * np.log10(np.median(abs_img)) - 13
+        plt.imshow(
+            20 * np.log10(abs_img).T, aspect="auto", origin="lower", extent=extent, vmin=m
+        )
+        plt.grid(False)
+        plt.xlabel("Range (m)")
+        plt.ylabel("Angle (sin(radians))")
+        print("Exporting image")
+        plt.savefig("sar_img.png", dpi=400)
+    else:
+        print("Skipping sar_img.png export (--skip-png)")
 
     # Export image as pickle file
     with open("sar_img.p", "wb") as f:

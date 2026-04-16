@@ -2,6 +2,7 @@
 # Example SAR data processing script.
 # Sample data can be downloaded from: https://hforsten.com/sar.safetensors.zip
 import sys
+import os
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,9 +10,9 @@ import scipy.signal as signal
 import pickle
 import torch
 import torchbp
+from torchbp.gpu import require_cuda, require_cuda_kernels
 from torchbp.util import make_polar_grid
-from torchbp.grid import PolarGrid, CartesianGrid
-from safetensors.torch import safe_open
+from torchbp.grid import CartesianGrid
 from sar_process_safetensor import grid_extent, load_data
 plt.style.use("ggplot")
 
@@ -19,6 +20,14 @@ if __name__ == "__main__":
     filename = "sar.safetensors"
     if len(sys.argv) > 1:
         filename = sys.argv[1]
+    if not os.path.exists(filename) and os.path.exists(os.path.join("examples", filename)):
+        filename = os.path.join("examples", filename)
+
+    dev = require_cuda()
+    require_cuda_kernels([
+        "torchbp::backprojection_polar_2d",
+        "torchbp::polar_interp_linear",
+    ])
 
     # Final image dimensions
     x0 = 1
@@ -56,8 +65,9 @@ if __name__ == "__main__":
         mission, tensors = load_data(filename)
     except FileNotFoundError:
         print(f"Input file {filename} not found.")
+        sys.exit(1)
 
-    sweeps = tensors["data"][sweep_start:sweep_start+nsweeps].to(dtype=torch.float32)
+    sweeps = tensors["data"][sweep_start:sweep_start+nsweeps].to(dtype=torch.float32, device=dev)
     pos = tensors["pos"][sweep_start:sweep_start+nsweeps].cpu().numpy()
     att = tensors["att"][sweep_start:sweep_start+nsweeps].cpu().numpy()
     counts = tensors["counts"][sweep_start:sweep_start+nsweeps]
@@ -126,8 +136,8 @@ if __name__ == "__main__":
     wa /= torch.mean(wa)
 
     # Apply windowing
-    sweeps *= wa[:, None, None].cpu()
-    sweeps *= wr[None, None, :].cpu()
+    sweeps *= wa[:, None, None]
+    sweeps *= wr[None, None, :]
 
     nsamples = sweeps.shape[-1]
     n = int(nsamples * fft_oversample)

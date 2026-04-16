@@ -41,8 +41,18 @@ def entropy(img: Tensor) -> Tensor:
         Interpolated radar image.
     """
     img_arg, nbatch = _prepare_entropy_args(img)
-    norm = torch.ops.torchbp.abs_sum.default(img_arg, nbatch)
-    x = torch.ops.torchbp.entropy.default(img_arg, norm, nbatch)
+    try:
+        norm = torch.ops.torchbp.abs_sum.default(img_arg, nbatch)
+        x = torch.ops.torchbp.entropy.default(img_arg, norm, nbatch)
+    except NotImplementedError:
+        if img_arg.dim() == 2:
+            img_batch = img_arg.unsqueeze(0)
+        else:
+            img_batch = img_arg
+        abs_img = torch.abs(img_batch)
+        norm = torch.sum(abs_img, dim=(-2, -1), keepdim=True).clamp_min(1e-12)
+        y = abs_img / norm
+        x = -torch.sum(y * torch.log(y.clamp_min(1e-12)), dim=(-2, -1))
     if nbatch == 1:
         return x.squeeze(0)
     return x

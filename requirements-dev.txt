@@ -1,0 +1,12 @@
+-r requirements.txt
+
+# Examples and plotting
+matplotlib
+
+# API
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Tests
+expecttest
