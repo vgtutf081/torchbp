@@ -152,6 +152,49 @@ Expected outputs:
 - `sar_img.tif` (GeoTIFF)
 - `sar_img_cart.pgw` (optional companion world file, only with `--write-world-file`)
 
+### Backprojection algorithms
+
+The library provides several backprojection implementations. The example script uses the basic linear interpolation method, but you can use the operators directly in Python:
+
+**Basic back projection** (fastest, default):
+```python
+import torchbp
+img = torchbp.ops.backprojection_polar_2d(
+    data, grid, fc, r_res, pos, d0
+)
+```
+
+**Lanczos interpolation** (higher quality):
+```python
+img = torchbp.ops.backprojection_polar_2d_lanczos(
+    data, grid, fc, r_res, pos, d0, order=6
+)
+```
+
+**Omega-K (Knab interpolation)** (best quality, slower):
+```python
+img = torchbp.ops.backprojection_polar_2d_knab(
+    data, grid, fc, r_res, pos, d0, order=4, oversample=2
+)
+```
+
+**Fast Factorized Backprojection (FFBP)** (10x faster on moderate-size images):
+```python
+img = torchbp.ops.ffbp(
+    data, grid, fc, r_res, pos,
+    stages=3,
+    divisions=2,
+    interp_method=("knab", 6, 1.5)
+)
+```
+
+**Cartesian grid backprojection** (alternative output format):
+```python
+img = torchbp.ops.backprojection_cart_2d(
+    data, grid_cart, fc, r_res, pos, d0
+)
+```
+
 ## Documentation
 
 API documentation and examples can be built with sphinx.
@@ -294,6 +337,14 @@ Form fields:
 - `dpi`: output PNG DPI (CLI/JSON override profile default)
 - `max_side`: optional max output side in pixels
 - `write_world_file`: optional boolean (default: `false`), exports `.pgw`
+
+**Processing profiles** (affect quality and speed):
+
+- `fast_preview`: minimal processing, ~30sec on RTX 3090
+- `standard`: balanced quality/speed, ~5 min on RTX 3090
+- `high_quality`: maximum quality, ~15 min on RTX 3090
+
+Internally, profiles select different backprojection methods and stage configurations.
 
 ### Job status model
 
