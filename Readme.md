@@ -149,6 +149,8 @@ Expected outputs:
 - `sar_img.png`
 - `sar_img.p`
 - `sar_img_cart.png`
+- `sar_img.tif` (GeoTIFF)
+- `sar_img_cart.pgw` (optional companion world file, only with `--write-world-file`)
 
 ## Documentation
 
@@ -169,6 +171,20 @@ processes it, and verifies output artifacts):
 
 ```bash
 python -m unittest tests.test_examples_smoke -v
+```
+
+Run core API/pipeline unit tests:
+
+```bash
+python -m unittest \
+	tests.test_api_jobs \
+	tests.test_job_store \
+	tests.test_jobs_prepare \
+	tests.test_pipeline_progress \
+	tests.test_profiles \
+	tests.test_output_formats \
+	tests.test_validation \
+	tests.test_telemetry_logging -v
 ```
 
 Run the full operator test suite:
@@ -210,24 +226,128 @@ Form fields:
 - `fft_oversample`: FFT oversampling factor (CLI/JSON override profile default)
 - `dpi`: output PNG DPI (CLI/JSON override profile default)
 - `max_side`: optional max output side in pixels
+- `write_world_file`: optional boolean (default: `false`), exports `.pgw`
 
-Validation is performed before queueing (`mission metadata` and `trajectory sanity`).
+### Job status model
+
+Job statuses:
+
+- `queued`
+- `validating`
+- `running`
+- `canceling`
+- `canceled`
+- `success`
+- `failed`
+
+`GET /jobs/{job_id}` returns:
+
+- `stage` (current stage name)
+- `stage_progress` (0..100 within stage)
+- `overall_progress` (0..100 weighted total)
+- `cancel_requested` (bool)
+- `error_class` (`validation_error | transient_infra_error | resource_error | algorithm_error`)
+
+Progress is weighted by stage (not guessed from wall-clock):
+
+- ingest = 5%
+- validation = 5%
+- range compression = 15%
+- backprojection = 35%
+- autofocus = 30%
+- export = 10%
+
+### Cancellation semantics
+
+Endpoint: `POST /jobs/{job_id}/cancel`
+
+- Cancellation is accepted in `queued | validating | running`
+- Job switches to `canceling`, worker checks cancel flag between long stages
+- Final state becomes `canceled`
+
+### Input validation before enqueue
+
+Validation is executed before queueing and rejects invalid payloads with HTTP `422`.
+
+Checks include:
+
+- mission metadata fields and numeric sanity
+- trajectory shape, monotonic timestamps, speed/acceleration sanity
+- signal sanity (finite values, minimum sweeps/samples, saturation/DC-bias hints)
+- dimensional consistency across signal/trajectory/timestamps
+
 On success API returns `job_id` and queue `task_id`.
 
 Status endpoints:
 
 - `GET /jobs/{job_id}`
 - `GET /jobs/{job_id}/manifest`
+- `POST /jobs/{job_id}/cancel`
+
+### Idempotency and versioning
+
+Request deduplication uses a fingerprint composed of:
+
+- input fingerprint (filename + payload hash)
+- processing fingerprint (parameters + pipeline/version metadata)
+
+Version fields included in fingerprint:
+
+- `pipeline_version`
+- `algorithm_version`
+- `profile_version`
+- `schema_version`
+- optional `calibration_version`
+- optional `dem_version`
+
+These are configured by env vars:
+
+- `TORCHBP_PIPELINE_VERSION`
+- `TORCHBP_ALGORITHM_VERSION`
+- `TORCHBP_PROFILE_VERSION`
+- `TORCHBP_SCHEMA_VERSION`
+- `TORCHBP_CALIBRATION_VERSION`
+- `TORCHBP_DEM_VERSION`
 
 ### Artifacts per job
 
-Each completed job stores:
+Storage prefix:
 
-- `sar_img.p`
-- `sar_img_cart.png` (quicklook)
-- `sar_img.tif` (GeoTIFF)
-- `sar_img_cart.pgw` (world file)
-- `manifest.json` (URIs + metrics)
+- `jobs/{job_id}/...`
+
+Layout:
+
+```text
+jobs/{job_id}/
+	inputs/
+	manifest.json
+	metrics/
+	logs/
+	intermediates/
+	outputs/
+	previews/
+	debug/
+```
+
+Typical artifacts:
+
+- `inputs/input.safetensors`
+- `intermediates/sar_img.p`
+- `previews/sar_img_cart.png`
+- `outputs/sar_img.tif`
+- `outputs/sar_img_cart.pgw` (optional)
+- `logs/*.log`
+- `metrics/timings.json`
+- `manifest.json`
+
+Manifest contains pipeline passport metadata:
+
+- `job_id`
+- `pipeline_version`, `algorithm_version`, `schema_version`
+- `profile`
+- `processing_parameters`
+- `input_artifacts`, `output_artifacts` with `sha256`
+- `timings`, `stage_weights`, `warnings`, `quality_metrics`
 
 Storage backend is configurable:
 
@@ -241,7 +361,8 @@ curl.exe -X POST "http://127.0.0.1:8000/jobs" ^
 	-F "file=@examples/sar.safetensors" ^
 	-F "profile=standard" ^
 	-F "dpi=300" ^
-	-F "max_side=2048"
+	-F "max_side=2048" ^
+	-F "write_world_file=false"
 ```
 
 Linux/macOS example:
@@ -251,7 +372,8 @@ curl -X POST "http://127.0.0.1:8000/jobs" \
 	-F "file=@examples/sar.safetensors" \
 	-F "profile=fast_preview" \
 	-F "dpi=300" \
-	-F "max_side=1024"
+	-F "max_side=1024" \
+	-F "write_world_file=false"
 ```
 
 Check status:
@@ -260,11 +382,23 @@ Check status:
 curl "http://127.0.0.1:8000/jobs/<job_id>"
 ```
 
+Cancel running job:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/<job_id>/cancel"
+```
+
 ## CI
 
 GitHub Actions workflows are included:
 
-- `.github/workflows/ci.yml` with separate `smoke` and `full-ops` jobs
+- `.github/workflows/ci.yml` with separate `smoke` and `regression` jobs
 - `.github/workflows/nightly-benchmark.yml` for scheduled benchmarks
 
-Both CI workflows upload test/benchmark logs as artifacts.
+CI split:
+
+- `smoke`: tiny/synthetic quick health checks
+- `regression`: broader operator regression suite
+- `nightly benchmark`: throughput/latency benchmark on schedule
+
+All workflows upload logs as artifacts.
