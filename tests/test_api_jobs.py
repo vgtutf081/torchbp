@@ -35,6 +35,19 @@ class TestApiJobs(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         mock_prepare_job.assert_not_called()
 
+    @patch("api.app.STORE")
+    def test_cancel_job_sets_canceling_status(self, mock_store) -> None:
+        class _Job:
+            status = "running"
+
+        mock_store.get_job.return_value = _Job()
+
+        response = self.client.post("/jobs/job_123/cancel")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "canceling")
+        mock_store.request_cancel.assert_called_once_with("job_123")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,6 +30,7 @@ jobs:
             tests.test_api_jobs \
             tests.test_job_store \
             tests.test_jobs_prepare \
+            tests.test_pipeline_progress \
             tests.test_profiles \
             tests.test_output_formats \
             tests.test_validation \
@@ -43,8 +44,8 @@ jobs:
           path: artifacts/smoke.log
           if-no-files-found: error
 
-  full-ops:
-    name: full-ops
+  regression:
+    name: regression
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,14 +62,14 @@ jobs:
           python -m pip install -r requirements-dev.txt
           USE_CUDA=0 FORCE_CUDA=0 python -m pip install --no-build-isolation -e .
 
-      - name: Run full operator tests
+      - name: Run regression operator tests
         run: |
           mkdir -p artifacts
-          python -m unittest tests.test_torchbp -v | tee artifacts/full-ops.log
+          python -m unittest tests.test_torchbp -v | tee artifacts/regression.log
 
-      - name: Upload full-ops artifacts
+      - name: Upload regression artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: full-ops-test-logs
-          path: artifacts/full-ops.log
+          name: regression-test-logs
+          path: artifacts/regression.log
           if-no-files-found: error

@@ -22,13 +22,22 @@ class TestJobStore(unittest.TestCase):
             self.assertIsNotNone(job)
             self.assertEqual(job.status, "queued")
             self.assertEqual(job.stage, "queued")
+            self.assertAlmostEqual(job.stage_progress, 0.0)
+            self.assertAlmostEqual(job.overall_progress, 0.0)
 
-            store.update_status("job_1", status="running", stage="backprojection", progress=0.5)
+            store.update_status(
+                "job_1",
+                status="running",
+                stage="backprojection",
+                stage_progress=65.0,
+                overall_progress=43.0,
+            )
             job = store.get_job("job_1")
             self.assertIsNotNone(job)
             self.assertEqual(job.status, "running")
             self.assertEqual(job.stage, "backprojection")
-            self.assertAlmostEqual(job.progress, 0.5)
+            self.assertAlmostEqual(job.stage_progress, 65.0)
+            self.assertAlmostEqual(job.overall_progress, 43.0)
 
             store.set_result_manifest("job_1", {"files": [{"name": "sar_img.p"}]})
             job = store.get_job("job_1")

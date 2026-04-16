@@ -20,6 +20,12 @@ class Settings:
     s3_endpoint_url: str | None
     s3_access_key_id: str | None
     s3_secret_access_key: str | None
+    pipeline_version: str
+    algorithm_version: str
+    profile_version: str
+    schema_version: str
+    calibration_version: str | None
+    dem_version: str | None
 
     def to_worker_dict(self) -> dict:
         return {
@@ -36,6 +42,12 @@ class Settings:
             "s3_endpoint_url": self.s3_endpoint_url,
             "s3_access_key_id": self.s3_access_key_id,
             "s3_secret_access_key": self.s3_secret_access_key,
+            "pipeline_version": self.pipeline_version,
+            "algorithm_version": self.algorithm_version,
+            "profile_version": self.profile_version,
+            "schema_version": self.schema_version,
+            "calibration_version": self.calibration_version,
+            "dem_version": self.dem_version,
         }
 
 
@@ -68,4 +80,10 @@ def load_settings() -> Settings:
         s3_endpoint_url=os.getenv("TORCHBP_S3_ENDPOINT_URL") or None,
         s3_access_key_id=os.getenv("TORCHBP_S3_ACCESS_KEY_ID") or None,
         s3_secret_access_key=os.getenv("TORCHBP_S3_SECRET_ACCESS_KEY") or None,
+        pipeline_version=os.getenv("TORCHBP_PIPELINE_VERSION", "1.0.0"),
+        algorithm_version=os.getenv("TORCHBP_ALGORITHM_VERSION", "1.0.0"),
+        profile_version=os.getenv("TORCHBP_PROFILE_VERSION", "1"),
+        schema_version=os.getenv("TORCHBP_SCHEMA_VERSION", "1"),
+        calibration_version=os.getenv("TORCHBP_CALIBRATION_VERSION") or None,
+        dem_version=os.getenv("TORCHBP_DEM_VERSION") or None,
     )

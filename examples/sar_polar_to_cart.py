@@ -91,11 +91,20 @@ if __name__ == "__main__":
         default=None,
         help="Maximum output side in pixels (keeps aspect ratio).",
     )
+    parser.add_argument(
+        "--write-world-file",
+        action="store_true",
+        default=None,
+        help="Write optional world file companion (.pgw).",
+    )
     args = parser.parse_args()
     config = _load_json_config(args.config)
     profile = normalize_profile(_resolve_value(args.profile, config, "profile", "standard"))
     profile_defaults = cart_profile_defaults(profile)
     output_prefix = str(_resolve_value(args.output_prefix, config, "output_prefix", "sar_img"))
+    write_world_file_companion = bool(
+        _resolve_value(args.write_world_file, config, "write_world_file", False)
+    )
 
     filename = _resolve_value(args.filename, config, "filename", "sar_img.p")
     # Check in examples directory if file not found in current directory
@@ -169,21 +178,22 @@ if __name__ == "__main__":
     raster = img_linear.T.astype("float32")
 
     geotiff_path = f"{output_prefix}.tif"
-    world_file_path = f"{output_prefix}_cart.pgw"
     write_geotiff(
         Path(geotiff_path),
         raster,
         metadata={"format": "torchbp", "source": "sar_polar_to_cart"},
     )
-    write_world_file(
-        Path(world_file_path),
-        xmin=grid.x0,
-        xmax=grid.x1,
-        ymin=grid.y0,
-        ymax=grid.y1,
-        width=raster.shape[1],
-        height=raster.shape[0],
-    )
+    if write_world_file_companion:
+        world_file_path = f"{output_prefix}_cart.pgw"
+        write_world_file(
+            Path(world_file_path),
+            xmin=grid.x0,
+            xmax=grid.x1,
+            ymin=grid.y0,
+            ymax=grid.y1,
+            width=raster.shape[1],
+            height=raster.shape[0],
+        )
 
     plt.imshow(img_db.T, origin="lower", aspect="equal", vmin=m, vmax=m2, extent=extent)
     plt.grid(False)

@@ -25,13 +25,13 @@ class TestValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             file_path = Path(temp_dir) / "sample.safetensors"
             tensors = {
-                "data": torch.randn(4, 1, 8),
+                "data": torch.randn(64, 1, 128),
                 "pos": torch.tensor(
-                    [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [3.0, 0.0, 1.0]],
+                    [[float(i), 0.0, 1.0] for i in range(64)],
                     dtype=torch.float32,
                 ),
-                "att": torch.zeros((4, 3), dtype=torch.float32),
-                "counts": torch.tensor([0.0, 1.0, 2.0, 3.0], dtype=torch.float32),
+                "att": torch.zeros((64, 3), dtype=torch.float32),
+                "counts": torch.arange(64, dtype=torch.float32),
             }
             metadata = {
                 "fsample": "50000000",

@@ -6,6 +6,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from .job_store import JobStore
 from .jobs import prepare_job
 from .models import ProcessParams
+from .pipeline import STATUS_CANCELING, STATUS_QUEUED, STATUS_RUNNING, STATUS_VALIDATING
 from .queueing import InlineQueueBackend, RQQueueBackend
 from .settings import load_settings
 from .validation import validate_safetensors_payload
@@ -48,6 +49,7 @@ async def submit_job(
     dpi: int = Form(700),
     max_side: int | None = Form(None),
     profile: str = Form("standard"),
+    write_world_file: bool = Form(False),
 ) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Input filename is missing")
@@ -75,6 +77,7 @@ async def submit_job(
         dpi=dpi,
         max_side=max_side,
         profile=profile_name,
+        write_world_file=bool(write_world_file),
     )
     job_id, _, reused = prepare_job(
         filename=file.filename,
@@ -90,7 +93,7 @@ async def submit_job(
             store_path=str(SETTINGS.jobs_db_path),
             settings_dict=SETTINGS.to_worker_dict(),
         )
-        return {"job_id": job_id, "status": "queued", "task_id": task.external_id}
+        return {"job_id": job_id, "status": STATUS_QUEUED, "task_id": task.external_id}
 
     existing = STORE.get_job(job_id)
     return {
@@ -112,8 +115,11 @@ def job_status(job_id: str) -> dict:
         "job_id": job.job_id,
         "status": job.status,
         "stage": job.stage,
-        "progress": job.progress,
+        "stage_progress": job.stage_progress,
+        "overall_progress": job.overall_progress,
+        "cancel_requested": job.cancel_requested,
         "error": job.error_message,
+        "error_class": job.error_class,
         "profile": job.profile,
         "params": params,
         "result_manifest": manifest,
@@ -130,6 +136,19 @@ def job_manifest(job_id: str) -> dict:
     return json.loads(job.result_manifest_json) if job.result_manifest_json else {}
 
 
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    job = STORE.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in {STATUS_QUEUED, STATUS_VALIDATING, STATUS_RUNNING}:
+        raise HTTPException(status_code=409, detail=f"Job cannot be canceled from status '{job.status}'")
+
+    STORE.request_cancel(job_id)
+    STORE.update_status(job_id, status=STATUS_CANCELING)
+    return {"job_id": job_id, "status": STATUS_CANCELING, "cancel_requested": True}
+
+
 @app.post("/process")
 async def process_back_compat(
     file: UploadFile = File(...),
@@ -138,6 +157,7 @@ async def process_back_compat(
     dpi: int = Form(700),
     max_side: int | None = Form(None),
     profile: str = Form("standard"),
+    write_world_file: bool = Form(False),
 ) -> dict:
     return await submit_job(
         file=file,
@@ -146,6 +166,7 @@ async def process_back_compat(
         dpi=dpi,
         max_side=max_side,
         profile=profile,
+        write_world_file=write_world_file,
     )
 
 

@@ -83,6 +83,58 @@ def validate_trajectory(pos: torch.Tensor, att: torch.Tensor, counts: torch.Tens
     return errors
 
 
+def validate_signal(
+    data: torch.Tensor,
+    *,
+    pos: torch.Tensor,
+    counts: torch.Tensor,
+) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if data.ndim < 2:
+        errors.append("data must have at least 2 dimensions [N, ..., samples]")
+        return errors, warnings
+
+    nsweeps = int(data.shape[0])
+    nsamples = int(data.shape[-1])
+    if nsweeps < 64:
+        errors.append("minimum number of sweeps is 64")
+    if nsamples < 64:
+        errors.append("minimum number of samples per sweep is 64")
+
+    if pos.shape[0] != nsweeps or counts.shape[0] != nsweeps:
+        errors.append("inconsistent sizes: data/pos/counts first dimension must match")
+
+    if not torch.isfinite(data).all().item():
+        errors.append("data contains non-finite values")
+        return errors, warnings
+
+    sample_view = data
+    if data.ndim > 2:
+        sample_view = data[:, 0, :]
+
+    max_abs = torch.max(torch.abs(sample_view)).item()
+    if max_abs > 0:
+        sat_ratio = float((torch.abs(sample_view) >= (0.99 * max_abs)).float().mean().item())
+        if sat_ratio > 0.05:
+            warnings.append(f"high saturated sample ratio: {sat_ratio:.3f}")
+
+    mean_abs = float(torch.mean(torch.abs(sample_view)).item())
+    std_abs = float(torch.std(torch.abs(sample_view)).item())
+    if std_abs > 1e-9:
+        dc_bias_ratio = mean_abs / std_abs
+        if dc_bias_ratio > 5.0:
+            warnings.append(f"possible DC bias/leakage detected: ratio={dc_bias_ratio:.2f}")
+
+    if pos.shape[0] >= 2:
+        path_len = float(torch.sum(torch.linalg.norm(torch.diff(pos, dim=0), dim=1)).item())
+        if path_len < 5.0:
+            warnings.append("trajectory coverage is very small (<5m), image grid coverage may be poor")
+
+    return errors, warnings
+
+
 def validate_safetensors_file(path: Path) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -100,7 +152,11 @@ def validate_safetensors_file(path: Path) -> dict:
                 pos = f.get_tensor("pos")
                 att = f.get_tensor("att")
                 counts = f.get_tensor("counts")
+                data = f.get_tensor("data")
                 errors.extend(validate_trajectory(pos, att, counts))
+                signal_errors, signal_warnings = validate_signal(data, pos=pos, counts=counts)
+                errors.extend(signal_errors)
+                warnings.extend(signal_warnings)
     except Exception as exc:
         errors.append(f"unable to read safetensors payload: {exc}")
 
